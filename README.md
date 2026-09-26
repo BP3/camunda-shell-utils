@@ -115,6 +115,7 @@ Each takes short and long options; `--help` describes them.
 | `c8-list-processes` | List deployed processes as `"Process Name" processDefinitionId` |
 | `c8-list-process-versions` | List each version of the named or piped-in processes as `processDefinitionId version` |
 | `c8-cancel-process-instances` | Cancel the active instances of the named or piped-in process versions; `-n`/`--dry-run` lists them instead |
+| `c8-delete-process-instances` | Delete the history of finished (completed or terminated) instances of the named or piped-in process versions, as whole call trees: each root with every instance it called, and never a called instance whose parent stays (`--ignore-dependencies` turns this off); `-n`/`--dry-run` lists them instead |
 
 The output is plain text, one item per line, so the scripts combine with each
 other and with standard tools:
@@ -133,9 +134,9 @@ what they would do without changing anything. Try that first:
 c8-list-process-versions PROCESS_ID | c8-cancel-process-instances --dry-run
 ```
 
-When you name a process on the command line, you can pick its versions
-with ranges and phrases instead of listing numbers. `--help` has the full
-list:
+When you name a process on the command line, the scripts that act on
+process versions let you pick them with ranges and phrases instead of
+listing numbers. `--help` has the full list:
 
 ```sh
 c8-cancel-process-instances --dry-run PROCESS_ID oldest 10
