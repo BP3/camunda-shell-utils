@@ -10,9 +10,11 @@
 #
 #   c8-list-process-versions Process_X | c8-cancel-process-instances --dry-run
 #
-# Only active root instances are cancelled (the API ignores any other state
-# or parent filter); instances called from another process are cancelled
-# with their root, so they are reported but not targeted.
+# The batch operation cancels active root instances, and the engine ends
+# every instance they called, at any depth, whatever its process; the dry
+# run lists all of them. An active instance called from another process is
+# cancelled only with its root, so if that root isn't being cancelled, it's
+# reported and left alone.
 
 set -eu
 
@@ -59,14 +61,18 @@ c8-list-process-versions can be piped in:
 Output, one line per item, for piping into other commands:
 
   --dry-run   processDefinitionId version processInstanceKey
-              (each instance that would be cancelled)
+              (each instance that would end: each root, followed by the
+              instances it called)
   otherwise   processDefinitionId version batchOperationKey
               (each cancellation started; it runs in the background)
 
-A summary goes to stderr. Only active root instances are cancelled; active
-instances called from another process are cancelled with their root, so
-they are reported but not targeted. Exits with status 1 if any requested
-version isn't deployed.
+Instances are cancelled as whole call trees: cancelling a root instance ends
+every instance it called, at any depth, whatever their process or version.
+An active instance called from another process ends only with its root: if
+that root isn't being cancelled, it's reported and left alone.
+
+A summary goes to stderr. Exits with status 1 if any requested version
+isn't deployed.
 
 Options:
   -n, --dry-run               show what would be cancelled; change nothing
@@ -95,26 +101,39 @@ status=0
 camunda_resolve_versions "$@" || status=$?
 [ -s "$CAMUNDA_TARGETS" ] || exit "$status"
 
-# The roots are what the batch operation cancels; called instances go with
-# their root, so they're only reported.
+# The batch operation cancels active root instances; the engine then ends
+# every instance they called, at any depth, whatever its process. Find
+# those too, so the dry run and summary show everything that will end.
+active='{"state": "ACTIVE"}'
 camunda_find_instances '{"state": "ACTIVE", "parentProcessInstanceKey": {"$exists": false}}' "$tmp/roots"
-camunda_find_instances '{"state": "ACTIVE", "parentProcessInstanceKey": {"$exists": true}}' "$tmp/children"
+jq -r '.processInstanceKey' "$tmp/roots" >"$tmp/root-keys"
+camunda_find_descendants "$tmp/root-keys" "$active" "$tmp/called"
+camunda_plan_trees "$tmp/roots" "$tmp/called" >"$tmp/plan"
 
 camunda_count_instances "$tmp/roots" >"$tmp/counts"
-roots=$(awk '{ n += $4 } END { print n + 0 }' "$tmp/counts")
+total=$(wc -l <"$tmp/plan" | tr -d ' ')
+roots=$(wc -l <"$tmp/roots" | tr -d ' ')
 versions=$(awk '$4 > 0' "$tmp/counts" | wc -l | tr -d ' ')
-if [ -s "$tmp/children" ]; then
-    camunda_count_instances "$tmp/children" | awk '$4 > 0' |
+summary="$roots root instance(s) of $versions version(s), with $((total - roots)) instance(s) they called"
+
+# Active called instances of the chosen versions outside those trees stay:
+# they end only with their own root.
+camunda_find_instances '{"state": "ACTIVE", "parentProcessInstanceKey": {"$exists": true}}' "$tmp/called-here"
+jq -c --rawfile plan "$tmp/plan" '
+    ($plan | split("\n") | map(select(. != "") | split(" ")[4] | {key: ., value: true}) | from_entries) as $in
+    | select($in[.processInstanceKey] | not)' "$tmp/called-here" >"$tmp/skipped"
+if [ -s "$tmp/skipped" ]; then
+    camunda_count_instances "$tmp/skipped" | awk '$4 > 0' |
         while read -r id v _ n; do
             camunda_warn "$id $v also has $n active instance(s) called from other processes;" \
-                "they are cancelled only with their root instance"
+                "they are cancelled only with their root instance, which isn't being cancelled"
         done
 fi
 
 if [ -n "$dry_run" ]; then
-    camunda_list_instances "$tmp/roots"
-    printf '%s: dry run in %s: would cancel %s instance(s) of %s version(s); nothing changed\n' \
-        "${0##*/}" "$CAMUNDA_ENV" "$roots" "$versions" >&2
+    awk '{ print $3, $4, $5 }' "$tmp/plan"
+    printf '%s: dry run in %s: would cancel %s instance(s): %s; nothing changed\n' \
+        "${0##*/}" "$CAMUNDA_ENV" "$total" "$summary" >&2
     exit "$status"
 fi
 
@@ -123,7 +142,8 @@ if [ "$roots" -eq 0 ]; then
     exit "$status"
 fi
 
-camunda_confirm "cancel $roots instance(s) of $versions process version(s)"
+camunda_confirm "cancel $total instance(s) ($summary)"
 camunda_run_batches /process-instances/cancellation '{}' <"$tmp/counts" || status=1
-printf '%s: started cancelling %s instance(s) in %s\n' "${0##*/}" "$CAMUNDA_BATCHED" "$CAMUNDA_ENV" >&2
+printf '%s: started cancelling %s root instance(s) in %s; the instances they called end with them\n' \
+    "${0##*/}" "$CAMUNDA_BATCHED" "$CAMUNDA_ENV" >&2
 exit "$status"

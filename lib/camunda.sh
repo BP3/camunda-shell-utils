@@ -878,6 +878,28 @@ camunda_find_descendants() {
     rm -f "$_cfd_frontier" "$_cfd_seen" "$_cfd_level"
 }
 
+# camunda_plan_trees ROOTS CALLED
+#
+# Prints the call trees of the root instances in the file ROOTS, using the
+# instances in CALLED (from camunda_find_descendants), as lines of
+# "targetId targetVersion processDefinitionId version processInstanceKey":
+# grouped by target version, each root followed by the instances it called.
+camunda_plan_trees() {
+    jq -n -r --rawfile targets "$CAMUNDA_TARGETS" --slurpfile roots "$1" --slurpfile called "$2" '
+        ($called | map({key: .processInstanceKey, value: .parentProcessInstanceKey}) | from_entries) as $parent
+        | ($roots | map({key: .processInstanceKey, value: true}) | from_entries) as $isroot
+        | def root_of: if . == null or $isroot[.] then . else ($parent[.] | root_of) end;
+          ($called | group_by(.processInstanceKey | root_of)
+            | map({key: (.[0].processInstanceKey | root_of), value: (sort_by(.processInstanceKey))})
+            | from_entries) as $tree
+        | ($roots | group_by(.processDefinitionKey)
+            | map({key: .[0].processDefinitionKey, value: sort_by(.processInstanceKey)}) | from_entries) as $byversion
+        | $targets | split("\n")[] | select(. != "") | split(" ") as [$id, $v, $k]
+        | ($byversion[$k] // [])[] as $root
+        | ([$root] + ($tree[$root.processInstanceKey] // []))[]
+        | "\($id) \($v) \(.processDefinitionId) \(.processDefinitionVersion) \(.processInstanceKey)"'
+}
+
 # camunda_run_batches PATH FILTER
 #
 # Reads "processDefinitionId version key count" lines (camunda_count_instances)
