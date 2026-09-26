@@ -87,6 +87,14 @@ Each takes short and long options; `--help` describes them.
 |---|---|
 | `c8-topology` | Show brokers, partitions and version, a quick way to check a profile |
 | `c8-list-processes` | List deployed processes as `"Process Name" processDefinitionId` |
+| `c8-list-process-versions` | List each version of the named or piped-in processes as `processDefinitionId version` |
+
+The output is plain text, one item per line, so the scripts combine with each
+other and with standard tools:
+
+```sh
+c8-list-processes -e dev | grep 'Open' | c8-list-process-versions -e dev
+```
 
 ## Writing a script
 
