@@ -41,6 +41,32 @@ other POSIX shells, against both Camunda SaaS and self-managed clusters.
 Every script takes `-e ENV` or `--environment-name ENV`, or falls back to
 `$CAMUNDA_ENV`. If neither is set, the script stops rather than guessing.
 
+Usually you work in one environment for a while, so set it once for the
+shell session and leave it out of each command:
+
+```sh
+export CAMUNDA_ENV=dev
+c8-list-processes | grep PATTERN | c8-list-process-versions
+```
+
+Use `-e` for a one-off command against a different environment. It takes
+precedence over `CAMUNDA_ENV`:
+
+```sh
+c8-list-processes -e uat
+```
+
+In a pipeline, `-e` applies only to the command it's given to, so each
+command needs its own:
+
+```sh
+c8-list-processes -e uat | grep PATTERN | c8-list-process-versions -e uat
+```
+
+The same goes for a prefix assignment: `CAMUNDA_ENV=uat c8-list-processes | ...`
+only sets the environment for the first command. Everything after the `|`
+would still use your exported value, or stop if there isn't one.
+
 Settings are loaded in this order, and later sources override earlier ones:
 
 | Source | Purpose |
@@ -93,8 +119,11 @@ The output is plain text, one item per line, so the scripts combine with each
 other and with standard tools:
 
 ```sh
-c8-list-processes -e dev | grep PATTERN | c8-list-process-versions -e dev
+c8-list-processes | grep PATTERN | c8-list-process-versions
 ```
+
+(with `CAMUNDA_ENV` exported, as in
+[Environments and profiles](#environments-and-profiles)).
 
 ## Writing a script
 
