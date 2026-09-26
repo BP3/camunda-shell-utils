@@ -1,0 +1,132 @@
+# shell-utils
+
+Shell scripts for the [Camunda 8 Orchestration API](https://docs.camunda.io/docs/apis-tools/orchestration-cluster-api-rest/orchestration-cluster-api-rest-overview/),
+written in plain POSIX `sh` with `curl`. They work in bash, zsh, dash and
+other POSIX shells, against both Camunda SaaS and self-managed clusters.
+
+## Requirements
+
+- `curl`
+- `jq`: needed by the `list-*` scripts, and used to pretty-print responses in a terminal
+
+## Setup
+
+1. Put `bin/` on your `PATH`, or symlink the scripts you want into a directory
+   that's already on it:
+
+   ```sh
+   ln -s "$PWD/bin/c8-topology" ~/bin/
+   ```
+
+2. Create one profile per environment in `~/.config/camunda/`, starting from
+   the examples in [`profiles/`](profiles/):
+
+   ```sh
+   mkdir -p ~/.config/camunda
+   cp profiles/common.env.example ~/.config/camunda/common.env
+   cp profiles/saas.env.example   ~/.config/camunda/dev.env   # then sit, uat, prod ...
+   chmod 600 ~/.config/camunda/*.env
+   ```
+
+   Then fill in each environment's cluster ID and client credentials.
+
+3. Check that it works:
+
+   ```sh
+   c8-topology -e dev
+   ```
+
+## Environments and profiles
+
+Every script takes `-e ENV` or `--environment-name ENV`, or falls back to
+`$CAMUNDA_ENV`. If neither is set, the script stops rather than guessing.
+
+Settings are loaded in this order, and later sources override earlier ones:
+
+| Source | Purpose |
+|---|---|
+| `~/.config/camunda/common.env` | shared values, e.g. SaaS region (optional) |
+| `~/.config/camunda/<env>.env` | one per environment: cluster, credentials |
+| exported `CAMUNDA_*` variables | one-off overrides, CI (a warning shows what was overridden) |
+
+Profiles are *parsed*, not sourced. Only `CAMUNDA_*` lines are read, and
+nothing in them is run or expanded. Files that use `export KEY='value'` work
+unchanged. The full list of settings is at the top of
+[`lib/camunda.sh`](lib/camunda.sh).
+
+- **SaaS** needs only `CAMUNDA_CLUSTER_REGION`, `CAMUNDA_CLUSTER_ID`,
+  `CAMUNDA_CLIENT_ID` and `CAMUNDA_CLIENT_SECRET`. The REST address, token URL
+  and audience are derived from these.
+- **Self-managed** sets `CAMUNDA_CLIENT_MODE='self-managed'`,
+  `CAMUNDA_REST_ADDRESS`, and an auth strategy: `oauth` (Keycloak, Entra or
+  another OIDC provider), `basic` or `none`. See
+  [`profiles/self-managed.env.example`](profiles/self-managed.env.example).
+
+Use `CAMUNDA_CONFIG_DIR` to keep profiles somewhere else.
+
+## Credentials and safety
+
+- **OAuth tokens** are cached per environment in
+  `${XDG_CACHE_HOME:-~/.cache}/camunda/`, with owner-only permissions, until a
+  minute before they expire.
+- **Secrets stay off the command line**, where `ps` could show them. They're
+  passed to curl through a temporary config file that only you can read.
+- **File permissions:** you get a warning if a profile is readable by other
+  users.
+- **Protected environments:** `prod` is protected by default. Scripts that
+  change anything ask you to type the environment name before going ahead.
+  `-y`/`--yes` skips the prompt. Set `CAMUNDA_PROTECTED='true'` in any other profile to
+  protect it too, or `'false'` to turn protection off.
+
+## Scripts
+
+Every script is named `c8-*` (for Camunda 8), so `c8-<Tab>` lists them all.
+Each takes short and long options; `--help` describes them.
+
+| Script | Description |
+|---|---|
+| `c8-topology` | Show brokers, partitions and version, a quick way to check a profile |
+| `c8-list-processes` | List deployed processes as `"Process Name" processDefinitionId` |
+
+## Writing a script
+
+Scripts source [`lib/camunda.sh`](lib/camunda.sh), parse their options,
+load a profile, and call the API. [`bin/c8-topology`](bin/c8-topology)
+is the minimal template. Start each new file with the same license header:
+
+```sh
+#!/bin/sh
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 BP3 Global Inc.
+```
+
+Options are parsed with a plain `while`/`case` loop, since `getopts` has no
+long options. The script's own options come first. `camunda_common_option`
+handles the shared ones (`-e`/`--environment-name`, `-h`/`--help`, which calls
+the script's `usage` function) and rejects unknown options:
+
+```sh
+while [ $# -gt 0 ]; do
+    case $1 in
+        -n | --dry-run) dry_run=1; shift ;;
+        --) shift; break ;;
+        -?*) camunda_common_option "$@"; shift "$_camunda_shift" ;;
+        *) break ;;
+    esac
+done
+```
+
+Then:
+
+```sh
+camunda_load_profile                          # uses -e, or $CAMUNDA_ENV
+camunda_api GET /topology                     # path is relative to /v2
+
+camunda_api POST /process-instances/search --data @query.json
+camunda_search /process-definitions/search '{"filter":{}}' # all pages, one item per line
+camunda_confirm "cancel 12 process instances" # before any change
+```
+
+## License
+
+[MIT](LICENSE) © BP3 Global Inc.

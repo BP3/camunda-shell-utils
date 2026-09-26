@@ -1,0 +1,62 @@
+#!/bin/sh
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 BP3 Global Inc.
+#
+# c8-list-processes - list the processes deployed to a cluster, one per line
+#
+# Output is plain text for piping into other commands:
+#
+#   "Process Name" processDefinitionId
+#
+# The name is a JSON string (so embedded quotes are escaped, and a process
+# without a name shows as ""); the id is always the last field. Names and
+# ids come from the latest version of each process.
+
+set -eu
+
+# Find lib/ next to bin/, following symlinks (e.g. from ~/bin).
+self=$0
+while [ -L "$self" ]; do
+    link=$(readlink "$self")
+    case $link in
+        /*) self=$link ;;
+        *) self=$(dirname "$self")/$link ;;
+    esac
+done
+. "$(cd "$(dirname "$self")/.." && pwd)/lib/camunda.sh"
+
+usage() {
+    cat <<EOF
+Usage: ${0##*/} [OPTION]...
+
+List the processes deployed to an environment, sorted by name:
+
+  "Process Name" processDefinitionId
+
+Options:
+  -e, --environment-name ENV  environment profile to use (default: \$CAMUNDA_ENV)
+  -h, --help                  show this help and exit
+EOF
+}
+
+while [ $# -gt 0 ]; do
+    case $1 in
+        --) shift; break ;;
+        -?*) camunda_common_option "$@"; shift "$_camunda_shift" ;;
+        *) break ;;
+    esac
+done
+[ $# -eq 0 ] || camunda_usage_error "unexpected argument '$1'"
+
+camunda_load_profile
+
+# Sort here rather than in the API: it can't sort by name when filtering on
+# the latest version. Different processes can share a name (copied BPMN
+# files often do), so the id keeps their order stable.
+camunda_search /process-definitions/search '{"filter":{"isLatestVersion":true}}' \
+    >"$CAMUNDA_TMPDIR/processes"
+jq -r -s '
+    sort_by((.name // "" | ascii_downcase), .processDefinitionId)
+    | .[]
+    | "\(.name // "" | @json) \(.processDefinitionId)"
+' "$CAMUNDA_TMPDIR/processes"

@@ -1,0 +1,34 @@
+# --- JetBrains / IntelliJ IDEA ---
+.idea/
+*.iml
+*.ipr
+*.iws
+out/
+
+# --- macOS ---
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+
+# --- Editor temp / backup files ---
+*~
+*.swp
+*.swo
+*.bak
+*.orig
+
+# --- Local config & secrets (Camunda client credentials, tokens, etc.) ---
+.env
+.env.*
+!.env.example
+*.local
+*.token
+*.pem
+*.key
+
+# --- curl artefacts / scratch output ---
+*.cookies
+cookie-jar*
+tmp/
+*.log
