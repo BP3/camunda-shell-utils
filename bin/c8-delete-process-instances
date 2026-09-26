@@ -6,7 +6,8 @@
 #
 # Deletes the history of COMPLETED and TERMINATED instances, as whole call
 # trees: a root instance goes with every instance it called (whatever their
-# process), and a called instance is never deleted while its parent stays.
+# process), and a called instance is never deleted while its parent stays;
+# one whose parent is already gone counts as a root.
 # The versions themselves stay deployed. Takes "processDefinitionId version"
 # pairs, on the command line or piped in from c8-list-process-versions, and
 # starts a deletion batch operation per version, naming the exact instances:
@@ -39,7 +40,8 @@ Instances are deleted as whole call trees:
   - a root instance is deleted with every instance it called, at any depth,
     whatever their process or version
   - an instance called from another process is deleted only with its
-    parent: if the parent stays (or is already gone), it is skipped
+    parent: if the parent stays, it is skipped; if the parent is already
+    gone (e.g. removed by history retention), it counts as a root
 --ignore-dependencies turns this off: only the chosen versions' finished
 instances are deleted, called or not, and nothing they called.
 
@@ -115,6 +117,23 @@ finished='{"state": {"$in": ["COMPLETED", "TERMINATED"]}}'
 finished_roots='{"state": {"$in": ["COMPLETED", "TERMINATED"]}, "parentProcessInstanceKey": {"$exists": false}}'
 finished_called='{"state": {"$in": ["COMPLETED", "TERMINATED"]}, "parentProcessInstanceKey": {"$exists": true}}'
 
+# $1: file of instances (one per line). Writes to $2 the ones whose parent
+# no longer exists, e.g. removed by history retention: they count as roots.
+orphans() {
+    jq -r '.parentProcessInstanceKey // empty' "$1" | sort -u >"$tmp/parent-keys"
+    : >"$tmp/parents-found"
+    split -l 1000 "$tmp/parent-keys" "$tmp/pk."
+    for batch in "$tmp"/pk.*; do
+        [ -f "$batch" ] || continue
+        query=$(jq -R -s -c '{filter: {processInstanceKey: {"$in": split("\n") | map(select(. != ""))}}}' "$batch")
+        camunda_search /process-instances/search "$query" >>"$tmp/parents-found"
+    done
+    rm -f "$tmp"/pk.*
+    jq -c --slurpfile found "$tmp/parents-found" '
+        ($found | map({key: .processInstanceKey, value: true}) | from_entries) as $exists
+        | select(.parentProcessInstanceKey != null and ($exists[.parentProcessInstanceKey] | not))' "$1" >"$2"
+}
+
 if [ -n "$ignore_deps" ]; then
     # Just the chosen versions' finished instances, whatever their parents
     # and children. Each version's instances are its own "tree".
@@ -127,25 +146,34 @@ if [ -n "$ignore_deps" ]; then
         | "\($id) \($v) \(.processDefinitionId) \(.processDefinitionVersion) \(.processInstanceKey)"
     ' >"$tmp/plan"
 
-    # Say what the default would have done differently.
+    # Say what the default would have done differently: called instances
+    # whose parent exists but stays, and instances they called that stay.
     total=$(wc -l <"$tmp/plan" | tr -d ' ')
     versions=$(awk '{ print $1, $2 }' "$tmp/plan" | sort -u | wc -l | tr -d ' ')
     awk '{ print $5 }' "$tmp/plan" >"$tmp/plan-keys"
-    called=$(jq -s --rawfile keys "$tmp/plan-keys" '
+    orphans "$tmp/all" "$tmp/orphans"
+    called=$(jq -s --rawfile keys "$tmp/plan-keys" --slurpfile orphans "$tmp/orphans" '
         ($keys | split("\n") | map({key: ., value: true}) | from_entries) as $in
-        | [.[] | select(.parentProcessInstanceKey != null and ($in[.parentProcessInstanceKey] | not))] | length
+        | ($orphans | map({key: .processInstanceKey, value: true}) | from_entries) as $orphan
+        | [.[] | select(.parentProcessInstanceKey != null and ($in[.parentProcessInstanceKey] | not)
+                        and ($orphan[.processInstanceKey] | not))] | length
     ' "$tmp/all")
     camunda_find_descendants "$tmp/plan-keys" "$finished" "$tmp/below"
     left=$(jq -c --rawfile keys "$tmp/plan-keys" '
         ($keys | split("\n") | map({key: ., value: true}) | from_entries) as $in
         | select($in[.processInstanceKey] | not)' "$tmp/below" | wc -l | tr -d ' ')
-    camunda_warn "--ignore-dependencies: $called of these were called by an instance that stays (or is" \
-        "already gone), and $left instance(s) they called, in other versions or processes, stay behind"
+    camunda_warn "--ignore-dependencies: $called of these were called by an instance that stays, and" \
+        "$left instance(s) they called, in other versions or processes, stay behind"
     summary="$total instance(s) of $versions version(s), ignoring call dependencies"
 else
-    # Whole call trees: the finished root instances of the chosen versions,
-    # and everything they called, whatever its process or version.
+    # Whole call trees. The roots: the chosen versions' finished instances
+    # that have no parent, or whose parent no longer exists.
     camunda_find_instances "$finished_roots" "$tmp/roots"
+    camunda_find_instances "$finished_called" "$tmp/called-here"
+    orphans "$tmp/called-here" "$tmp/orphans"
+    cat "$tmp/orphans" >>"$tmp/roots"
+
+    # And everything they called, whatever its process or version.
     jq -r '.processInstanceKey' "$tmp/roots" >"$tmp/root-keys"
     camunda_find_descendants "$tmp/root-keys" "$finished" "$tmp/called"
 
@@ -167,35 +195,24 @@ else
     ' >"$tmp/plan"
 
     # Called instances of the chosen versions that aren't in any of those
-    # trees stay: their parent isn't being deleted.
-    camunda_find_instances "$finished_called" "$tmp/called-here"
+    # trees stay: their parent exists and isn't being deleted.
     jq -c --rawfile plan "$tmp/plan" '
         ($plan | split("\n") | map(select(. != "") | split(" ")[4] | {key: ., value: true}) | from_entries) as $in
         | select($in[.processInstanceKey] | not)' "$tmp/called-here" >"$tmp/skipped"
     skipped=$(wc -l <"$tmp/skipped" | tr -d ' ')
-    gone=0
-    if [ "$skipped" -gt 0 ]; then
-        # How many of those parents are already gone, e.g. removed by retention.
-        jq -r '.parentProcessInstanceKey' "$tmp/skipped" | sort -u >"$tmp/skipped-parents"
-        : >"$tmp/parents-found"
-        split -l 1000 "$tmp/skipped-parents" "$tmp/sp."
-        for batch in "$tmp"/sp.*; do
-            [ -f "$batch" ] || continue
-            query=$(jq -R -s -c '{filter: {processInstanceKey: {"$in": split("\n") | map(select(. != ""))}}}' "$batch")
-            camunda_search /process-instances/search "$query" >>"$tmp/parents-found"
-        done
-        gone=$(jq -n -r --slurpfile skipped "$tmp/skipped" --slurpfile found "$tmp/parents-found" '
-            ($found | map({key: .processInstanceKey, value: true}) | from_entries) as $exists
-            | [$skipped[] | select($exists[.parentProcessInstanceKey] | not)] | length')
-    fi
 
     total=$(wc -l <"$tmp/plan" | tr -d ' ')
     roots=$(wc -l <"$tmp/roots" | tr -d ' ')
+    orphaned=$(wc -l <"$tmp/orphans" | tr -d ' ')
     versions=$(awk '{ print $1, $2 }' "$tmp/plan" | sort -u | wc -l | tr -d ' ')
-    summary="$roots root instance(s) of $versions version(s), with $((total - roots)) instance(s) they called"
+    summary="$roots root instance(s) of $versions version(s)"
+    if [ "$orphaned" -gt 0 ]; then
+        summary="$summary ($orphaned of them called instances whose parent is already gone)"
+    fi
+    summary="$summary, with $((total - roots)) instance(s) they called"
     if [ "$skipped" -gt 0 ]; then
-        camunda_warn "skipping $skipped called instance(s) of the chosen versions whose parent isn't being" \
-            "deleted: $((skipped - gone)) with a parent that still exists, $gone whose parent is already gone"
+        camunda_warn "skipping $skipped called instance(s) of the chosen versions: their parent still" \
+            "exists and isn't being deleted"
     fi
 fi
 
