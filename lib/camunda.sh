@@ -842,6 +842,42 @@ camunda_list_instances() {
         | ($instances[$k] // [])[] | "\($id) \($v) \(.)"'
 }
 
+# camunda_find_descendants KEYS FILTER OUTFILE
+#
+# Writes every instance called, directly or further down, by the instances
+# whose keys are listed in the file KEYS (one per line), and that match
+# FILTER (a JSON object of filter fields), one per line. Walks the call
+# tree a level at a time, 1000 parents per search.
+camunda_find_descendants() {
+    _cfd_frontier=$CAMUNDA_TMPDIR/frontier
+    _cfd_seen=$CAMUNDA_TMPDIR/seen
+    _cfd_level=$CAMUNDA_TMPDIR/level
+    sort -u "$1" >"$_cfd_frontier"
+    cp "$_cfd_frontier" "$_cfd_seen"
+    : >"$3"
+    while [ -s "$_cfd_frontier" ]; do
+        : >"$_cfd_level"
+        split -l 1000 "$_cfd_frontier" "$CAMUNDA_TMPDIR/parents."
+        for _cfd_batch in "$CAMUNDA_TMPDIR"/parents.*; do
+            [ -f "$_cfd_batch" ] || continue
+            _cfd_query=$(jq -R -s -c --argjson extra "$2" '
+                {filter: ($extra + {parentProcessInstanceKey: {"$in": split("\n") | map(select(. != ""))}})}' \
+                "$_cfd_batch")
+            camunda_search /process-instances/search "$_cfd_query" >>"$_cfd_level" || exit 1
+        done
+        rm -f "$CAMUNDA_TMPDIR"/parents.*
+        # The next level: children not seen before (guards against loops).
+        jq -r '.processInstanceKey' "$_cfd_level" | sort -u |
+            awk -v seen="$_cfd_seen" 'BEGIN { while ((getline k <seen) > 0) s[k] = 1 } !s[$0]' \
+            >"$_cfd_frontier"
+        cat "$_cfd_frontier" >>"$_cfd_seen"
+        jq -c --rawfile new "$_cfd_frontier" \
+            '($new | split("\n") | map({key: ., value: true}) | from_entries) as $n | select($n[.processInstanceKey])' \
+            "$_cfd_level" >>"$3"
+    done
+    rm -f "$_cfd_frontier" "$_cfd_seen" "$_cfd_level"
+}
+
 # camunda_run_batches PATH FILTER
 #
 # Reads "processDefinitionId version key count" lines (camunda_count_instances)
