@@ -1,0 +1,280 @@
+#!/bin/sh
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 BP3 Global Inc.
+#
+# c8-cancel-process-instances - cancel the active instances of process versions
+#
+# Takes "processDefinitionId version" pairs, on the command line or piped in
+# from c8-list-process-versions, and starts one cancellation batch operation
+# per version that has active instances:
+#
+#   c8-list-process-versions Process_X | c8-cancel-process-instances --dry-run
+#
+# Only active root instances are cancelled (the API ignores any other state
+# or parent filter); instances called from another process are cancelled
+# with their root, so they are reported but not targeted.
+
+set -eu
+
+# Find lib/ next to bin/, following symlinks (e.g. from ~/bin).
+self=$0
+while [ -L "$self" ]; do
+    link=$(readlink "$self")
+    case $link in
+        /*) self=$link ;;
+        *) self=$(dirname "$self")/$link ;;
+    esac
+done
+. "$(cd "$(dirname "$self")/.." && pwd)/lib/camunda.sh"
+
+usage() {
+    cat <<EOF
+Usage: ${0##*/} [OPTION]... [PROCESS_ID VERSIONS...]
+
+Cancel the active instances of the given process versions.
+
+VERSIONS picks from the process's deployed versions. Combine any of:
+
+  670 671                     exact versions
+  27-100, 27 to 100           an inclusive range
+  first-600, 600-last         from the oldest, or to the newest, deployed
+                              version (600- also works)
+  older than 50, before 50    versions below 50; also '<50', '<=50'
+  newer than 50, after 50     versions above 50; also '>50', '>=50'
+  oldest 10                   the 10 oldest deployed versions
+  newest 5, latest 5          the 5 newest; 'latest' alone means 1
+  all                         every deployed version
+  ... except ..., ... but ... leave out what follows
+
+For example: 'all but newest 5', 'older than 600 except 400-410'. Quote
+anything with < or > so the shell doesn't treat it as a redirection. The
+versions selected are listed on stderr.
+
+With no arguments, read "processDefinitionId version" pairs from stdin, one
+per line, using the last two fields of each line, so the output of
+c8-list-process-versions can be piped in:
+
+  c8-list-process-versions PROCESS_ID | ${0##*/} --dry-run
+
+Output, one line per item, for piping into other commands:
+
+  --dry-run   processDefinitionId version processInstanceKey
+              (each instance that would be cancelled)
+  otherwise   processDefinitionId version batchOperationKey
+              (each cancellation started; it runs in the background)
+
+A summary goes to stderr. Only active root instances are cancelled; active
+instances called from another process are cancelled with their root, so
+they are reported but not targeted. Exits with status 1 if any requested
+version isn't deployed.
+
+Options:
+  -n, --dry-run               show what would be cancelled; change nothing
+  -y, --yes                   don't ask for confirmation in protected
+                              environments (e.g. prod)
+  -e, --environment-name ENV  environment profile to use (default: \$CAMUNDA_ENV)
+  -h, --help                  show this help and exit
+EOF
+}
+
+dry_run=
+while [ $# -gt 0 ]; do
+    case $1 in
+        -n | --dry-run) dry_run=1; shift ;;
+        -y | --yes) CAMUNDA_ASSUME_YES=1; shift ;;
+        --) shift; break ;;
+        -?*) camunda_common_option "$@"; shift "$_camunda_shift" ;;
+        *) break ;;
+    esac
+done
+if [ $# -eq 1 ]; then
+    camunda_usage_error "say which versions of '$1', e.g. 670, 27-100, 'oldest 10' or 'all but newest 5'"
+fi
+if [ $# -eq 0 ] && [ -t 0 ]; then
+    camunda_usage_error "no process versions: name them, or pipe them in (e.g. from c8-list-process-versions)"
+fi
+# Report selector mistakes before touching the API.
+if [ $# -gt 1 ]; then
+    shift_id=$1
+    shift
+    if ! camunda_select_versions --check "$@" </dev/null; then
+        printf "Try '%s --help' for more information.\n" "${0##*/}" >&2
+        exit 2
+    fi
+    set -- "$shift_id" "$@"
+fi
+
+camunda_load_profile
+camunda_require_command jq
+tmp=$CAMUNDA_TMPDIR
+status=0
+
+# --- which process ids ------------------------------------------------------
+
+if [ $# -gt 0 ]; then
+    id=$1
+    shift
+    printf '%s\n' "$id" >"$tmp/ids"
+else
+    # Piped in: "id version" lines, first occurrence only.
+    awk 'NF == 1 { print "BAD " NR ": " $0; next } NF { print $(NF - 1), $NF }' |
+        awk '!seen[$0]++' >"$tmp/requested"
+
+    if grep '^BAD ' "$tmp/requested" >"$tmp/bad"; then
+        sed 's/^BAD \([0-9]*\): /line \1: expected "PROCESS_ID VERSION", got: /' "$tmp/bad" |
+            while IFS= read -r line; do camunda_warn "$line"; done
+        camunda_die "no changes made"
+    fi
+    if awk '$2 !~ /^[0-9]+$/ { bad = 1; print "version must be a number: " $0 } END { exit !bad }' \
+        "$tmp/requested" >"$tmp/bad"; then
+        while IFS= read -r line; do camunda_warn "$line"; done <"$tmp/bad"
+        camunda_die "no changes made"
+    fi
+    [ -s "$tmp/requested" ] || exit 0
+    awk '!seen[$1]++ { print $1 }' "$tmp/requested" >"$tmp/ids"
+fi
+
+# --- look up the deployed versions and their processDefinitionKeys ----------
+
+# One search per 100 process ids; the key then pins down a single version.
+: >"$tmp/definitions"
+split -l 100 "$tmp/ids" "$tmp/ids."
+for batch in "$tmp"/ids.*; do
+    [ -f "$batch" ] || continue
+    query=$(jq -R -s -c '{filter: {processDefinitionId: {"$in": split("\n") | map(select(. != ""))}}}' "$batch")
+    camunda_search /process-definitions/search "$query" >>"$tmp/definitions"
+done
+
+# Named on the command line: apply the version selectors to what's deployed.
+if [ -n "${id:-}" ]; then
+    jq -r --arg id "$id" 'select(.processDefinitionId == $id) | .version' "$tmp/definitions" |
+        sort -n >"$tmp/deployed"
+    if [ ! -s "$tmp/deployed" ]; then
+        camunda_warn "no deployed versions of '$id' in '$CAMUNDA_ENV'"
+        exit 1
+    fi
+    camunda_select_versions "$@" <"$tmp/deployed" >"$tmp/selected" || status=$?
+    [ "$status" -le 1 ] || exit "$status"
+    if [ ! -s "$tmp/selected" ]; then
+        camunda_warn "no deployed versions of '$id' match '$*' (deployed: $(camunda_format_ranges <"$tmp/deployed"))"
+        exit 1
+    fi
+    printf '%s: selected %s version(s) of %s: %s\n' "${0##*/}" "$(wc -l <"$tmp/selected" | tr -d ' ')" \
+        "$id" "$(camunda_format_ranges <"$tmp/selected")" >&2
+    awk -v id="$id" '{ print id, $1 }' "$tmp/selected" >"$tmp/requested"
+fi
+
+# "id version key" for each requested version that exists, in input order.
+jq -n -r --rawfile requested "$tmp/requested" --slurpfile defs "$tmp/definitions" '
+    ($defs | map({key: "\(.processDefinitionId) \(.version)", value: .processDefinitionKey})
+        | from_entries) as $keys
+    | $requested | split("\n")[] | select(. != "") | select($keys[.]) | "\(.) \($keys[.])"
+' >"$tmp/targets"
+awk -v targets="$tmp/targets" '
+    BEGIN { while ((getline line <targets) > 0) { split(line, f, " "); found[f[1] " " f[2]] = 1 } }
+    !found[$0]' "$tmp/requested" |
+    while IFS= read -r missing; do
+        camunda_warn "not deployed in '$CAMUNDA_ENV', skipped: $missing"
+    done
+if [ "$(wc -l <"$tmp/targets")" -lt "$(wc -l <"$tmp/requested")" ]; then
+    status=1
+fi
+[ -s "$tmp/targets" ] || exit "$status"
+
+# --- find the active instances ------------------------------------------
+
+# $1: extra filter fields. Writes matching instances of the target versions.
+#
+# Searches by process id, 100 ids at a time, and keeps the target versions
+# locally: far fewer requests than filtering on version keys, since one
+# process can have hundreds of versions.
+search_instances() {
+    : >"$tmp/found"
+    awk '!seen[$1]++ { print $1 }' "$tmp/targets" | split -l 100 - "$tmp/pids."
+    for batch in "$tmp"/pids.*; do
+        [ -f "$batch" ] || continue
+        query=$(jq -R -s -c --argjson extra "$1" '
+            {filter: ({processDefinitionId: {"$in": split("\n") | map(select(. != ""))},
+                       state: "ACTIVE"} + $extra)}' "$batch")
+        camunda_search /process-instances/search "$query" >>"$tmp/found.all"
+    done
+    rm -f "$tmp"/pids.*
+    if [ -s "$tmp/found.all" ]; then
+        jq -c --rawfile targets "$tmp/targets" '
+            ($targets | split("\n") | map(select(. != "") | split(" ")[2] | {key: ., value: true})
+                | from_entries) as $wanted
+            | select($wanted[.processDefinitionKey])' "$tmp/found.all" >"$tmp/found"
+    fi
+    rm -f "$tmp/found.all"
+}
+
+# The roots are what the batch operation cancels.
+search_instances '{"parentProcessInstanceKey": {"$exists": false}}'
+mv "$tmp/found" "$tmp/roots"
+search_instances '{"parentProcessInstanceKey": {"$exists": true}}'
+mv "$tmp/found" "$tmp/children"
+
+# Instances per target: "id version key count".
+count_by_target() {
+    jq -n -r --rawfile targets "$tmp/targets" --slurpfile found "$1" '
+        ($found | group_by(.processDefinitionKey) | map({key: .[0].processDefinitionKey, value: length})
+            | from_entries) as $n
+        | $targets | split("\n")[] | select(. != "") | split(" ") as [$id, $v, $k]
+        | "\($id) \($v) \($k) \($n[$k] // 0)"'
+}
+count_by_target "$tmp/roots" >"$tmp/counts"
+roots=$(awk '{ n += $4 } END { print n + 0 }' "$tmp/counts")
+children=$(wc -l <"$tmp/children" | tr -d ' ')
+versions=$(awk '$4 > 0' "$tmp/counts" | wc -l | tr -d ' ')
+
+if [ "$children" -gt 0 ]; then
+    count_by_target "$tmp/children" | awk '$4 > 0' |
+        while read -r id v _ n; do
+            camunda_warn "$id $v also has $n active instance(s) called from other processes;" \
+                "they are cancelled only with their root instance"
+        done
+fi
+
+# --- dry run: list what would be cancelled ------------------------------
+
+if [ -n "$dry_run" ]; then
+    jq -n -r --rawfile targets "$tmp/targets" --slurpfile roots "$tmp/roots" '
+        ($roots | group_by(.processDefinitionKey)
+            | map({key: .[0].processDefinitionKey, value: (map(.processInstanceKey) | sort)})
+            | from_entries) as $instances
+        | $targets | split("\n")[] | select(. != "") | split(" ") as [$id, $v, $k]
+        | ($instances[$k] // [])[] | "\($id) \($v) \(.)"'
+    printf '%s: dry run in %s: would cancel %s instance(s) of %s version(s); nothing changed\n' \
+        "${0##*/}" "$CAMUNDA_ENV" "$roots" "$versions" >&2
+    exit "$status"
+fi
+
+# --- cancel ---------------------------------------------------------------
+
+if [ "$roots" -eq 0 ]; then
+    printf '%s: no active instances to cancel in %s\n' "${0##*/}" "$CAMUNDA_ENV" >&2
+    exit "$status"
+fi
+
+camunda_confirm "cancel $roots instance(s) of $versions process version(s)"
+
+started=0
+while read -r id v key n; do
+    [ "$n" -gt 0 ] || continue
+    # The filter must pin a single version: an empty one would cancel
+    # every active instance in the cluster.
+    case $key in
+        '' | *[!0-9]*) camunda_die "refusing to cancel: bad processDefinitionKey '$key' for $id $v" ;;
+    esac
+    jq -n -c --arg key "$key" '{filter: {processDefinitionKey: $key}}' >"$tmp/cancel.json"
+    if camunda_api POST /process-instances/cancellation --data @"$tmp/cancel.json" >"$tmp/created"; then
+        printf '%s %s %s\n' "$id" "$v" "$(jq -r '.batchOperationKey' "$tmp/created")"
+        started=$((started + n))
+    else
+        camunda_warn "could not start cancellation for $id $v"
+        status=1
+    fi
+done <"$tmp/counts"
+
+printf '%s: started cancelling %s instance(s) in %s\n' "${0##*/}" "$started" "$CAMUNDA_ENV" >&2
+exit "$status"
