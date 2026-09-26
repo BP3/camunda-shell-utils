@@ -38,8 +38,8 @@
 #   CAMUNDA_CLIENT_SECRET        OAuth client secret
 #   CAMUNDA_BASIC_AUTH_USERNAME  basic auth user
 #   CAMUNDA_BASIC_AUTH_PASSWORD  basic auth password
-#   CAMUNDA_PROTECTED            true | false; ask before changing anything
-#                                (default: true for 'prod', false otherwise)
+#   CAMUNDA_PROTECTED            true (default) | false; whether to ask for
+#                                confirmation before changing anything
 #
 # Secrets never appear on a command line (where 'ps' could show them): they
 # reach curl through a private config file instead.
@@ -911,12 +911,12 @@ camunda_run_batches() {
 
 # --- safety -------------------------------------------------------------
 
-# Succeeds if the current environment is protected (see CAMUNDA_PROTECTED).
+# Succeeds if the current environment is protected: every environment is,
+# unless its profile sets CAMUNDA_PROTECTED='false'.
 camunda_is_protected() {
-    case ${CAMUNDA_PROTECTED:-} in
+    case ${CAMUNDA_PROTECTED:-true} in
         true | yes | 1) return 0 ;;
         false | no | 0) return 1 ;;
-        '') [ "$CAMUNDA_ENV" = prod ] ;;
         *) camunda_die "CAMUNDA_PROTECTED must be true or false, not '$CAMUNDA_PROTECTED'" ;;
     esac
 }
