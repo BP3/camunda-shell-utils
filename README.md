@@ -118,6 +118,7 @@ Each takes short and long options; `--help` describes them.
 | `c8-list-process-versions` | List each version of the named or piped-in processes as `processDefinitionId version` |
 | `c8-cancel-process-instances` | Cancel the active instances of the named or piped-in process versions, as whole call trees: each root ends with every instance it called; `-n`/`--dry-run` lists them instead |
 | `c8-delete-process-instances` | Delete the history of finished (completed or terminated) instances of the named or piped-in process versions, as whole call trees: each root with every instance it called, and never a called instance whose parent stays (`--ignore-dependencies` turns this off); `-n`/`--dry-run` lists them instead |
+| `c8-delete-process-versions` | Delete the named or piped-in process versions; versions with active instances are skipped unless `--allow-active`, and `--delete-history` also removes their history (8.9+); `-n`/`--dry-run` lists them instead |
 
 The output is plain text, one item per line, so the scripts combine with each
 other and with standard tools:
@@ -145,6 +146,15 @@ c8-cancel-process-instances --dry-run PROCESS_ID oldest 10
 c8-cancel-process-instances --dry-run PROCESS_ID 27-100
 c8-cancel-process-instances --dry-run PROCESS_ID older than 600
 c8-cancel-process-instances --dry-run PROCESS_ID all but newest 5
+```
+
+A typical clean-up of old versions runs in three steps, each tried with
+`--dry-run` first:
+
+```sh
+c8-cancel-process-instances PROCESS_ID all but newest 5   # stop what's still running
+c8-delete-process-instances PROCESS_ID all but newest 5   # remove their history
+c8-delete-process-versions PROCESS_ID all but newest 5    # remove the versions
 ```
 
 ## Writing a script

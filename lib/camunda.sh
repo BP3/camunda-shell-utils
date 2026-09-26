@@ -703,8 +703,10 @@ camunda_check_version_args() {
 # Works out which deployed versions are meant and writes them to the file
 # named by CAMUNDA_TARGETS, as "processDefinitionId version
 # processDefinitionKey" lines in input order. The key pins down exactly one
-# version. Returns 1 if some requested versions aren't deployed (after
-# warning about them); exits on malformed input.
+# version. Also leaves every deployed version of the processes involved in
+# $CAMUNDA_TMPDIR/definitions (one JSON object per line). Returns 1 if some
+# requested versions aren't deployed (after warning about them); exits on
+# malformed input.
 camunda_resolve_versions() {
     camunda_require_command jq
     CAMUNDA_TARGETS=$CAMUNDA_TMPDIR/targets
