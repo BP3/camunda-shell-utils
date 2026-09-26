@@ -663,6 +663,216 @@ camunda_format_ranges() {
         END { flush(); print out }'
 }
 
+# --- process versions and their instances -------------------------------
+#
+# The building blocks of commands that act on process versions, such as
+# c8-cancel-process-instances:
+#
+#   camunda_check_version_args "$@"      # before camunda_load_profile
+#   camunda_load_profile
+#   camunda_resolve_versions "$@" || status=$?
+#   camunda_find_instances '{"state": "ACTIVE"}' "$CAMUNDA_TMPDIR/active"
+#   camunda_count_instances "$CAMUNDA_TMPDIR/active" >"$CAMUNDA_TMPDIR/counts"
+#   camunda_run_batches /process-instances/cancellation '{}' <"$CAMUNDA_TMPDIR/counts"
+#
+# The versions come from the command line (PROCESS_ID VERSIONS..., with the
+# selectors of camunda_select_versions) or from stdin ("processDefinitionId
+# version" lines, as c8-list-process-versions prints).
+
+# camunda_check_version_args "$@"
+#
+# Reports usage mistakes in the operands before anything else happens.
+camunda_check_version_args() {
+    if [ $# -eq 1 ]; then
+        camunda_usage_error "say which versions of '$1', e.g. 670, 27-100, 'oldest 10' or 'all but newest 5'"
+    fi
+    if [ $# -eq 0 ] && [ -t 0 ]; then
+        camunda_usage_error "no process versions: name them, or pipe them in (e.g. from c8-list-process-versions)"
+    fi
+    if [ $# -gt 1 ]; then
+        shift
+        if ! camunda_select_versions --check "$@" </dev/null; then
+            printf "Try '%s --help' for more information.\n" "${0##*/}" >&2
+            exit 2
+        fi
+    fi
+}
+
+# camunda_resolve_versions "$@"
+#
+# Works out which deployed versions are meant and writes them to the file
+# named by CAMUNDA_TARGETS, as "processDefinitionId version
+# processDefinitionKey" lines in input order. The key pins down exactly one
+# version. Returns 1 if some requested versions aren't deployed (after
+# warning about them); exits on malformed input.
+camunda_resolve_versions() {
+    camunda_require_command jq
+    CAMUNDA_TARGETS=$CAMUNDA_TMPDIR/targets
+    _crv_status=0
+    _crv_id=
+    _crv_req=$CAMUNDA_TMPDIR/requested
+    _crv_ids=$CAMUNDA_TMPDIR/ids
+    _crv_defs=$CAMUNDA_TMPDIR/definitions
+    : >"$CAMUNDA_TARGETS"
+
+    if [ $# -gt 0 ]; then
+        _crv_id=$1
+        shift
+        printf '%s\n' "$_crv_id" >"$_crv_ids"
+    else
+        # Piped in: "id version" lines, first occurrence only.
+        awk 'NF == 1 { print "BAD " NR ": " $0; next } NF { print $(NF - 1), $NF }' |
+            awk '!seen[$0]++' >"$_crv_req"
+        if grep '^BAD ' "$_crv_req" >"$CAMUNDA_TMPDIR/bad"; then
+            sed 's/^BAD \([0-9]*\): /line \1: expected "PROCESS_ID VERSION", got: /' "$CAMUNDA_TMPDIR/bad" |
+                while IFS= read -r _crv_line; do camunda_warn "$_crv_line"; done
+            camunda_die "no changes made"
+        fi
+        if awk '$2 !~ /^[0-9]+$/ { bad = 1; print "version must be a number: " $0 } END { exit !bad }' \
+            "$_crv_req" >"$CAMUNDA_TMPDIR/bad"; then
+            while IFS= read -r _crv_line; do camunda_warn "$_crv_line"; done <"$CAMUNDA_TMPDIR/bad"
+            camunda_die "no changes made"
+        fi
+        [ -s "$_crv_req" ] || return 0
+        awk '!seen[$1]++ { print $1 }' "$_crv_req" >"$_crv_ids"
+    fi
+
+    # The deployed versions and their keys, one search per 100 process ids.
+    : >"$_crv_defs"
+    split -l 100 "$_crv_ids" "$_crv_ids."
+    for _crv_batch in "$_crv_ids".*; do
+        [ -f "$_crv_batch" ] || continue
+        _crv_query=$(jq -R -s -c '{filter: {processDefinitionId: {"$in": split("\n") | map(select(. != ""))}}}' \
+            "$_crv_batch")
+        camunda_search /process-definitions/search "$_crv_query" >>"$_crv_defs" || exit 1
+    done
+    rm -f "$_crv_ids".*
+
+    # Named on the command line: apply the selectors to what's deployed.
+    if [ -n "$_crv_id" ]; then
+        _crv_deployed=$CAMUNDA_TMPDIR/deployed
+        jq -r --arg id "$_crv_id" 'select(.processDefinitionId == $id) | .version' "$_crv_defs" |
+            sort -n >"$_crv_deployed"
+        if [ ! -s "$_crv_deployed" ]; then
+            camunda_warn "no deployed versions of '$_crv_id' in '$CAMUNDA_ENV'"
+            return 1
+        fi
+        camunda_select_versions "$@" <"$_crv_deployed" >"$CAMUNDA_TMPDIR/selected" || _crv_status=$?
+        [ "$_crv_status" -le 1 ] || exit "$_crv_status"
+        if [ ! -s "$CAMUNDA_TMPDIR/selected" ]; then
+            camunda_warn "no deployed versions of '$_crv_id' match '$*'" \
+                "(deployed: $(camunda_format_ranges <"$_crv_deployed"))"
+            return 1
+        fi
+        printf '%s: selected %s version(s) of %s: %s\n' "${0##*/}" \
+            "$(wc -l <"$CAMUNDA_TMPDIR/selected" | tr -d ' ')" "$_crv_id" \
+            "$(camunda_format_ranges <"$CAMUNDA_TMPDIR/selected")" >&2
+        awk -v id="$_crv_id" '{ print id, $1 }' "$CAMUNDA_TMPDIR/selected" >"$_crv_req"
+    fi
+
+    # "id version key" for each requested version that exists.
+    jq -n -r --rawfile requested "$_crv_req" --slurpfile defs "$_crv_defs" '
+        ($defs | map({key: "\(.processDefinitionId) \(.version)", value: .processDefinitionKey})
+            | from_entries) as $keys
+        | $requested | split("\n")[] | select(. != "") | select($keys[.]) | "\(.) \($keys[.])"
+    ' >"$CAMUNDA_TARGETS"
+    awk -v targets="$CAMUNDA_TARGETS" '
+        BEGIN { while ((getline line <targets) > 0) { split(line, f, " "); found[f[1] " " f[2]] = 1 } }
+        !found[$0]' "$_crv_req" |
+        while IFS= read -r _crv_line; do
+            camunda_warn "not deployed in '$CAMUNDA_ENV', skipped: $_crv_line"
+        done
+    if [ "$(wc -l <"$CAMUNDA_TARGETS")" -lt "$(wc -l <"$_crv_req")" ]; then
+        _crv_status=1
+    fi
+    return "$_crv_status"
+}
+
+# camunda_find_instances FILTER OUTFILE
+#
+# Writes the instances of the target versions (see camunda_resolve_versions)
+# that match FILTER, a JSON object of process instance filter fields, one
+# per line. Searches by process id, 100 ids at a time, and picks out the
+# target versions locally: far fewer requests than filtering on version
+# keys, since one process can have hundreds of versions.
+camunda_find_instances() {
+    _cfi_all=$CAMUNDA_TMPDIR/found.all
+    : >"$_cfi_all"
+    : >"$2"
+    awk '!seen[$1]++ { print $1 }' "$CAMUNDA_TARGETS" | split -l 100 - "$CAMUNDA_TMPDIR/pids."
+    for _cfi_batch in "$CAMUNDA_TMPDIR"/pids.*; do
+        [ -f "$_cfi_batch" ] || continue
+        _cfi_query=$(jq -R -s -c --argjson extra "$1" '
+            {filter: ({processDefinitionId: {"$in": split("\n") | map(select(. != ""))}} + $extra)}' \
+            "$_cfi_batch")
+        camunda_search /process-instances/search "$_cfi_query" >>"$_cfi_all" || exit 1
+    done
+    rm -f "$CAMUNDA_TMPDIR"/pids.*
+    if [ -s "$_cfi_all" ]; then
+        jq -c --rawfile targets "$CAMUNDA_TARGETS" '
+            ($targets | split("\n") | map(select(. != "") | split(" ")[2] | {key: ., value: true})
+                | from_entries) as $wanted
+            | select($wanted[.processDefinitionKey])' "$_cfi_all" >"$2"
+    fi
+    rm -f "$_cfi_all"
+}
+
+# camunda_count_instances FILE
+#
+# For each target version prints "processDefinitionId version key count",
+# counting the instances in FILE (from camunda_find_instances).
+camunda_count_instances() {
+    jq -n -r --rawfile targets "$CAMUNDA_TARGETS" --slurpfile found "$1" '
+        ($found | group_by(.processDefinitionKey) | map({key: .[0].processDefinitionKey, value: length})
+            | from_entries) as $n
+        | $targets | split("\n")[] | select(. != "") | split(" ") as [$id, $v, $k]
+        | "\($id) \($v) \($k) \($n[$k] // 0)"'
+}
+
+# camunda_list_instances FILE
+#
+# Prints "processDefinitionId version processInstanceKey" for each instance
+# in FILE (from camunda_find_instances), in target order.
+camunda_list_instances() {
+    jq -n -r --rawfile targets "$CAMUNDA_TARGETS" --slurpfile found "$1" '
+        ($found | group_by(.processDefinitionKey)
+            | map({key: .[0].processDefinitionKey, value: (map(.processInstanceKey) | sort)})
+            | from_entries) as $instances
+        | $targets | split("\n")[] | select(. != "") | split(" ") as [$id, $v, $k]
+        | ($instances[$k] // [])[] | "\($id) \($v) \(.)"'
+}
+
+# camunda_run_batches PATH FILTER
+#
+# Reads "processDefinitionId version key count" lines (camunda_count_instances)
+# on stdin and, for each version with a count above zero, starts a batch
+# operation: POST PATH with the filter {processDefinitionKey: key} plus
+# FILTER's fields. Prints "processDefinitionId version batchOperationKey"
+# for each one started, and sets CAMUNDA_BATCHED to the total count of
+# instances they cover. Returns 1 if any failed to start.
+camunda_run_batches() {
+    CAMUNDA_BATCHED=0
+    _crb_status=0
+    while read -r _crb_id _crb_v _crb_key _crb_n; do
+        [ "$_crb_n" -gt 0 ] || continue
+        # The filter must pin a single version: without a key, a batch
+        # operation would match every instance in the cluster.
+        case $_crb_key in
+            '' | *[!0-9]*) camunda_die "refusing to continue: bad processDefinitionKey '$_crb_key' for $_crb_id $_crb_v" ;;
+        esac
+        jq -n -c --arg key "$_crb_key" --argjson extra "$2" '{filter: ($extra + {processDefinitionKey: $key})}' \
+            >"$CAMUNDA_TMPDIR/batch.json"
+        if camunda_api POST "$1" --data @"$CAMUNDA_TMPDIR/batch.json" >"$CAMUNDA_TMPDIR/batch.out"; then
+            printf '%s %s %s\n' "$_crb_id" "$_crb_v" "$(jq -r '.batchOperationKey' "$CAMUNDA_TMPDIR/batch.out")"
+            CAMUNDA_BATCHED=$((CAMUNDA_BATCHED + _crb_n))
+        else
+            camunda_warn "could not start the batch operation for $_crb_id $_crb_v"
+            _crb_status=1
+        fi
+    done
+    return "$_crb_status"
+}
+
 # --- safety -------------------------------------------------------------
 
 # Succeeds if the current environment is protected (see CAMUNDA_PROTECTED).
