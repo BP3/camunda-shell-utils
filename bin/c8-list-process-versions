@@ -1,0 +1,104 @@
+#!/bin/sh
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 BP3 Global Inc.
+#
+# c8-list-process-versions - list the deployed versions of processes
+#
+# Output is plain text for piping into other commands, one line per version:
+#
+#   processDefinitionId version
+#
+# Processes are named on the command line, or read from stdin one per line,
+# taking the last field of each line; so c8-list-processes output can be
+# piped straight in:
+#
+#   c8-list-processes | grep PATTERN | c8-list-process-versions
+
+set -eu
+
+# Find lib/ next to bin/, following symlinks (e.g. from ~/bin).
+self=$0
+while [ -L "$self" ]; do
+    link=$(readlink "$self")
+    case $link in
+        /*) self=$link ;;
+        *) self=$(dirname "$self")/$link ;;
+    esac
+done
+. "$(cd "$(dirname "$self")/.." && pwd)/lib/camunda.sh"
+
+usage() {
+    cat <<EOF
+Usage: ${0##*/} [OPTION]... [PROCESS_ID]...
+
+List the deployed versions of each process, oldest first:
+
+  processDefinitionId version
+
+With no PROCESS_ID, read them from stdin, one per line, using the last field
+of each line, so the output of c8-list-processes can be piped in:
+
+  c8-list-processes | grep PATTERN | ${0##*/}
+
+where PATTERN selects the processes you want by name or id.
+
+Processes are listed in the order given. Exits with status 1 if any
+process has no deployed versions.
+
+Options:
+  -e, --environment-name ENV  environment profile to use (default: \$CAMUNDA_ENV)
+  -h, --help                  show this help and exit
+EOF
+}
+
+while [ $# -gt 0 ]; do
+    case $1 in
+        --) shift; break ;;
+        -?*) camunda_common_option "$@"; shift "$_camunda_shift" ;;
+        *) break ;;
+    esac
+done
+if [ $# -eq 0 ] && [ -t 0 ]; then
+    camunda_usage_error "no process ids: name them, or pipe them in (e.g. from c8-list-processes)"
+fi
+
+camunda_load_profile
+camunda_require_command jq
+
+# The ids, one per line, first occurrence only.
+ids=$CAMUNDA_TMPDIR/ids
+if [ $# -gt 0 ]; then
+    printf '%s\n' "$@"
+else
+    awk 'NF { print $NF }'
+fi | awk '!seen[$0]++' >"$ids"
+
+# Search in batches, to keep each request a sensible size.
+versions=$CAMUNDA_TMPDIR/versions
+: >"$versions"
+split -l 100 "$ids" "$CAMUNDA_TMPDIR/batch."
+for batch in "$CAMUNDA_TMPDIR"/batch.*; do
+    [ -f "$batch" ] || continue
+    query=$(jq -R -s -c '{filter: {processDefinitionId: {"$in": split("\n") | map(select(. != ""))}}}' "$batch")
+    camunda_search /process-definitions/search "$query" >>"$versions"
+done
+
+# Print in the order given, versions ascending; then report the ids that
+# have no versions at all.
+jq -n -r --rawfile ids "$ids" --slurpfile items "$versions" '
+    ($items | group_by(.processDefinitionId)
+        | map({key: .[0].processDefinitionId, value: (map(.version) | unique)})
+        | from_entries) as $versions
+    | $ids | split("\n")[] | select(. != "") as $id
+    | ($versions[$id] // [])[] | "\($id) \(.)"
+'
+missing=$(jq -n -r --rawfile ids "$ids" --slurpfile items "$versions" '
+    ($items | map(.processDefinitionId)) as $found
+    | $ids | split("\n")[] | select(. != "" and (. as $id | $found | index([$id]) | not))
+')
+if [ -n "$missing" ]; then
+    printf '%s\n' "$missing" | while IFS= read -r id; do
+        camunda_warn "no deployed versions of '$id' in '$CAMUNDA_ENV'"
+    done
+    exit 1
+fi
