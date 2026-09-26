@@ -114,6 +114,7 @@ Each takes short and long options; `--help` describes them.
 | `c8-topology` | Show brokers, partitions and version, a quick way to check a profile |
 | `c8-list-processes` | List deployed processes as `"Process Name" processDefinitionId` |
 | `c8-list-process-versions` | List each version of the named or piped-in processes as `processDefinitionId version` |
+| `c8-cancel-process-instances` | Cancel the active instances of the named or piped-in process versions; `-n`/`--dry-run` lists them instead |
 
 The output is plain text, one item per line, so the scripts combine with each
 other and with standard tools:
@@ -124,6 +125,24 @@ c8-list-processes | grep PATTERN | c8-list-process-versions
 
 (with `CAMUNDA_ENV` exported, as in
 [Environments and profiles](#environments-and-profiles)).
+
+Scripts that change things have a `-n`/`--dry-run` option, which shows
+what they would do without changing anything. Try that first:
+
+```sh
+c8-list-process-versions PROCESS_ID | c8-cancel-process-instances --dry-run
+```
+
+When you name a process on the command line, you can pick its versions
+with ranges and phrases instead of listing numbers. `--help` has the full
+list:
+
+```sh
+c8-cancel-process-instances --dry-run PROCESS_ID oldest 10
+c8-cancel-process-instances --dry-run PROCESS_ID 27-100
+c8-cancel-process-instances --dry-run PROCESS_ID older than 600
+c8-cancel-process-instances --dry-run PROCESS_ID all but newest 5
+```
 
 ## Writing a script
 

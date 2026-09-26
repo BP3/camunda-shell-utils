@@ -521,6 +521,148 @@ camunda_search() {
     done
 }
 
+# --- version selectors --------------------------------------------------
+
+# camunda_select_versions [--check] SELECTOR...
+#
+# Reads a process's deployed version numbers on stdin, one per line, and
+# prints the ones the selectors pick, ascending. Selectors are words and
+# numbers, separated by spaces or commas; any mix may be combined:
+#
+#   670 671                     exact versions
+#   27-100, 27 to 100           an inclusive range
+#   first-600, 600-last         ranges from the oldest / to the newest
+#                               deployed version (600- also works)
+#   <50  <=50  >50  >=50        comparisons (quote them in the shell)
+#   older than 50, before 50    same as <50  (also: below)
+#   newer than 50, after 50     same as >50  (also: above)
+#   oldest 10                   the 10 oldest deployed versions
+#   newest 5, latest 5          the 5 newest (a bare 'latest' means 1)
+#   all                         every deployed version
+#   except ..., but ...         remove what follows, e.g. 'all but newest 5'
+#                               (with nothing before it, 'all' is implied)
+#
+# 'oldest' and 'newest' count deployed versions, which may have gaps.
+# Exit status: 0; 1 if an exact version named isn't deployed (the rest are
+# still printed); 2 if the selectors are invalid (with a message). With
+# --check only the syntax is checked: run it with empty input before any
+# API calls to report mistakes early.
+camunda_select_versions() {
+    _csv_check=
+    if [ "${1:-}" = --check ]; then
+        _csv_check=1
+        shift
+    fi
+    sort -n -u | awk -v prog="${0##*/}" -v sel="$*" -v check="$_csv_check" '
+        function fail(msg) {
+            printf "%s: error: %s\n", prog, msg >"/dev/stderr"
+            failed = 1
+            exit 2
+        }
+        function isnum(s) { return s ~ /^[0-9]+$/ }
+        function isend(s) { return isnum(s) || s == "first" || s == "last" }
+        function num(i, what) {
+            if (i > nt || !isnum(tok[i])) fail("\"" what "\" needs a version number")
+            return tok[i] + 0
+        }
+        function mark(x) {
+            if (excluding) { out[x] = 1 } else { in_[x] = 1 }
+        }
+        function range(lo, hi,   j) {
+            for (j = 1; j <= nv; j++) if (v[j] >= lo && v[j] <= hi) mark(v[j])
+        }
+        function term() { if (excluding) nexcl++; else nincl++ }
+
+        /^[0-9]+$/ { v[++nv] = $1 + 0; deployed[$1 + 0] = 1 }
+
+        END {
+            if (failed) exit 2
+            INF = 1e18
+            s = tolower(sel)
+            gsub(/,/, " ", s)
+            gsub(/<=/, " LE ", s); gsub(/>=/, " GE ", s)
+            gsub(/</, " LT ", s); gsub(/>/, " GT ", s)
+            nt = split(s, tok, " ")
+
+            for (i = 1; i <= nt; i++) {
+                t = tok[i]
+                if (t == "except" || t == "but") {
+                    if (excluding) fail("\"" t "\" used twice")
+                    excluding = 1
+                    continue
+                }
+                term()
+                if (isend(t) && (tok[i + 1] == "-" || tok[i + 1] == "to") && isend(tok[i + 2])) {
+                    t = t "-" tok[i + 2]
+                    i += 2
+                }
+                if (isnum(t)) {
+                    range(t + 0, t + 0)
+                    if (!excluding && !check && !deployed[t + 0]) missing = missing " " t
+                } else if (t ~ /^([0-9]+|first)-([0-9]+|last)$/) {
+                    split(t, r, "-")
+                    lo = r[1] == "first" ? -1 : r[1] + 0
+                    hi = r[2] == "last" ? INF : r[2] + 0
+                    if (lo > hi) fail("range \"" t "\" is backwards")
+                    range(lo, hi)
+                } else if (t ~ /^[0-9]+-$/) {
+                    range(substr(t, 1, length(t) - 1) + 0, INF)
+                } else if (t == "first" || t == "last") {
+                    fail("\"" t "\" is the end of a range, e.g. first-600 or 600-last" \
+                        " (for a number of versions, use oldest N or newest N)")
+                } else if (t == "LT") { range(-1, num(++i, "<") - 1)
+                } else if (t == "LE") { range(-1, num(++i, "<="))
+                } else if (t == "GT") { range(num(++i, ">") + 1, INF)
+                } else if (t == "GE") { range(num(++i, ">="), INF)
+                } else if (t == "older" || t == "before" || t == "below") {
+                    if (tok[i + 1] == "than") i++
+                    range(-1, num(++i, t) - 1)
+                } else if (t == "newer" || t == "after" || t == "above") {
+                    if (tok[i + 1] == "than") i++
+                    range(num(++i, t) + 1, INF)
+                } else if (t == "oldest") {
+                    n = num(++i, t)
+                    for (j = 1; j <= nv && j <= n; j++) mark(v[j])
+                } else if (t == "newest" || t == "latest") {
+                    n = 1
+                    if (isnum(tok[i + 1])) n = tok[++i] + 0
+                    for (j = nv; j >= 1 && j > nv - n; j--) mark(v[j])
+                } else if (t == "all") {
+                    range(-1, INF)
+                } else {
+                    fail("unknown version selector \"" tok[i] "\"")
+                }
+            }
+            if (!nincl && !nexcl) fail("no versions selected")
+            if (excluding && !nexcl) fail("nothing after \"except\"/\"but\"")
+
+            for (j = 1; j <= nv; j++)
+                if ((!nincl || in_[v[j]]) && !out[v[j]]) print v[j]
+            if (missing != "") {
+                printf "%s: warning: not deployed:%s\n", prog, missing >"/dev/stderr"
+                exit 1
+            }
+        }'
+}
+
+# camunda_format_ranges
+#
+# Reads ascending numbers on stdin and prints them compactly on one line,
+# e.g. "337-346, 400, 402-410".
+camunda_format_ranges() {
+    awk '
+        function flush() {
+            if (start == "") return
+            out = out (out == "" ? "" : ", ") (start == prev ? start : start "-" prev)
+        }
+        NF {
+            if (start != "" && $1 == prev + 1) { prev = $1; next }
+            flush()
+            start = prev = $1
+        }
+        END { flush(); print out }'
+}
+
 # --- safety -------------------------------------------------------------
 
 # Succeeds if the current environment is protected (see CAMUNDA_PROTECTED).
