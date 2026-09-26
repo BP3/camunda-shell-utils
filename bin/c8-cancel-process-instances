@@ -70,8 +70,8 @@ version isn't deployed.
 
 Options:
   -n, --dry-run               show what would be cancelled; change nothing
-  -y, --yes                   don't ask for confirmation in protected
-                              environments (e.g. prod)
+  -y, --yes                   don't ask for confirmation (see
+                              CAMUNDA_PROTECTED in the README)
   -e, --environment-name ENV  environment profile to use (default: \$CAMUNDA_ENV)
   -h, --help                  show this help and exit
 EOF

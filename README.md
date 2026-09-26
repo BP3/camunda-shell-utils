@@ -99,10 +99,12 @@ Use `CAMUNDA_CONFIG_DIR` to keep profiles somewhere else.
   passed to curl through a temporary config file that only you can read.
 - **File permissions:** you get a warning if a profile is readable by other
   users.
-- **Protected environments:** `prod` is protected by default. Scripts that
-  change anything ask you to type the environment name before going ahead.
-  `-y`/`--yes` skips the prompt. Set `CAMUNDA_PROTECTED='true'` in any other profile to
-  protect it too, or `'false'` to turn protection off.
+- **Confirmation:** scripts that change anything ask you to type the
+  environment name before going ahead, in every environment. `-y`/`--yes`
+  skips the prompt for one command. Set `CAMUNDA_PROTECTED='false'` in a
+  profile to stop the prompts for that environment. Without a terminal
+  (e.g. in CI), a script that would ask stops instead, unless given `-y`
+  or run where `CAMUNDA_PROTECTED` is `'false'`.
 
 ## Scripts
 

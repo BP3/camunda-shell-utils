@@ -83,8 +83,8 @@ Options:
   -n, --dry-run               show what would be deleted; change nothing
   --ignore-dependencies       delete only the chosen versions' instances,
                               ignoring the call trees they belong to
-  -y, --yes                   don't ask for confirmation in protected
-                              environments (e.g. prod)
+  -y, --yes                   don't ask for confirmation (see
+                              CAMUNDA_PROTECTED in the README)
   -e, --environment-name ENV  environment profile to use (default: \$CAMUNDA_ENV)
   -h, --help                  show this help and exit
 EOF
