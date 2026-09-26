@@ -12,7 +12,7 @@
 # taking the last field of each line; so c8-list-processes output can be
 # piped straight in:
 #
-#   c8-list-processes | grep 'Open' | c8-list-process-versions
+#   c8-list-processes | grep PATTERN | c8-list-process-versions
 
 set -eu
 
@@ -38,7 +38,9 @@ List the deployed versions of each process, oldest first:
 With no PROCESS_ID, read them from stdin, one per line, using the last field
 of each line, so the output of c8-list-processes can be piped in:
 
-  c8-list-processes | grep 'Open' | ${0##*/}
+  c8-list-processes | grep PATTERN | ${0##*/}
+
+where PATTERN selects the processes you want by name or id.
 
 Processes are listed in the order given. Exits with status 1 if any
 process has no deployed versions.

@@ -93,7 +93,7 @@ The output is plain text, one item per line, so the scripts combine with each
 other and with standard tools:
 
 ```sh
-c8-list-processes -e dev | grep 'Open' | c8-list-process-versions -e dev
+c8-list-processes -e dev | grep PATTERN | c8-list-process-versions -e dev
 ```
 
 ## Writing a script
