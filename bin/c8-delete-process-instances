@@ -179,20 +179,7 @@ else
 
     # The plan, "targetId targetVersion processDefinitionId version instanceKey",
     # grouped by chosen version: each root, then the instances it called.
-    jq -n -r --rawfile targets "$CAMUNDA_TARGETS" --slurpfile roots "$tmp/roots" --slurpfile called "$tmp/called" '
-        ($called | map({key: .processInstanceKey, value: .parentProcessInstanceKey}) | from_entries) as $parent
-        | ($roots | map({key: .processInstanceKey, value: true}) | from_entries) as $isroot
-        | def root_of: if . == null or $isroot[.] then . else ($parent[.] | root_of) end;
-          ($called | group_by(.processInstanceKey | root_of)
-            | map({key: (.[0].processInstanceKey | root_of), value: (sort_by(.processInstanceKey))})
-            | from_entries) as $tree
-        | ($roots | group_by(.processDefinitionKey)
-            | map({key: .[0].processDefinitionKey, value: sort_by(.processInstanceKey)}) | from_entries) as $byversion
-        | $targets | split("\n")[] | select(. != "") | split(" ") as [$id, $v, $k]
-        | ($byversion[$k] // [])[] as $root
-        | ([$root] + ($tree[$root.processInstanceKey] // []))[]
-        | "\($id) \($v) \(.processDefinitionId) \(.processDefinitionVersion) \(.processInstanceKey)"
-    ' >"$tmp/plan"
+    camunda_plan_trees "$tmp/roots" "$tmp/called" >"$tmp/plan"
 
     # Called instances of the chosen versions that aren't in any of those
     # trees stay: their parent exists and isn't being deleted.
