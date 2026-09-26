@@ -1,4 +1,4 @@
-# shell-utils
+# Camunda Shell Utilities
 
 Shell scripts for the [Camunda 8 Orchestration API](https://docs.camunda.io/docs/apis-tools/orchestration-cluster-api-rest/orchestration-cluster-api-rest-overview/),
 written in plain POSIX `sh` with `curl`. They work in bash, zsh, dash and
