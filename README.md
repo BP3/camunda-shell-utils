@@ -23,12 +23,14 @@ other POSIX shells, against both Camunda SaaS and self-managed clusters.
 
    ```sh
    mkdir -p ~/.config/camunda/acme
-   cp profiles/common.env.example ~/.config/camunda/common.env
-   cp profiles/saas.env.example   ~/.config/camunda/acme/dev.env   # then sit, uat, prod ...
+   cp profiles/common.env.example          ~/.config/camunda/common.env
+   cp profiles/customer-common.env.example ~/.config/camunda/acme/common.env
+   cp profiles/saas.env.example            ~/.config/camunda/acme/dev.env   # then sit, uat, prod ...
    chmod 600 ~/.config/camunda/common.env ~/.config/camunda/*/*.env
    ```
 
-   Then fill in each environment's cluster ID and client credentials.
+   Then set the customer's region in `acme/common.env`, and fill in each
+   environment's cluster ID and client credentials.
 
 3. Choose the customer and environment, and check that it works:
 
@@ -44,9 +46,9 @@ per environment:
 
 ```
 ~/.config/camunda/
-  common.env            # shared by every customer (e.g. SaaS URLs)
+  common.env            # shared by every customer (e.g. SaaS token URL)
   acme/
-    common.env          # shared by acme's environments (e.g. region)
+    common.env          # shared by acme's environments (e.g. SaaS region)
     dev.env  sit.env  uat.env  prod.env
   globex/
     dev.env  prod.env
@@ -115,8 +117,8 @@ Settings are loaded in this order, and later sources override earlier ones:
 
 | Source | Purpose |
 |---|---|
-| `~/.config/camunda/common.env` | shared by every customer, e.g. SaaS URLs (optional) |
-| `~/.config/camunda/<customer>/common.env` | shared by the customer's environments, e.g. region (optional) |
+| `~/.config/camunda/common.env` | shared by every customer, e.g. SaaS token URL (optional) |
+| `~/.config/camunda/<customer>/common.env` | shared by the customer's environments, e.g. SaaS region, SaaS or self-managed (optional) |
 | `~/.config/camunda/<customer>/<env>.env` | one per environment: cluster, credentials |
 | exported `CAMUNDA_*` variables | one-off overrides, CI (a warning shows what was overridden) |
 
