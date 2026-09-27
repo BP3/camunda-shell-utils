@@ -34,7 +34,10 @@ List the processes deployed to an environment, sorted by name:
   "Process Name" processDefinitionId
 
 Options:
-  -e, --environment-name ENV  environment profile to use (default: \$CAMUNDA_ENV)
+  -c, --customer NAME         customer profile to use (default: \$CAMUNDA_CUSTOMER,
+                              or the one chosen with c8-profile use)
+  -e, --environment-name ENV  environment to use (default: \$CAMUNDA_ENV, or
+                              the one chosen with c8-profile use)
   -h, --help                  show this help and exit
 EOF
 }

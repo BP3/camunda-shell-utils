@@ -11,12 +11,21 @@
 #
 # Profiles
 # --------
-# Settings are read from $CAMUNDA_CONFIG_DIR (default
-# ${XDG_CONFIG_HOME:-$HOME/.config}/camunda), later sources winning:
+# Profiles live in $CAMUNDA_CONFIG_DIR (default
+# ${XDG_CONFIG_HOME:-$HOME/.config}/camunda), with a folder per customer:
 #
-#   1. common.env    optional; values shared by every environment
-#   2. <env>.env     required; one file per environment (dev, sit, uat, ...)
-#   3. environment   any CAMUNDA_* variable already exported in the shell
+#   common.env                optional; shared by every customer
+#   <customer>/common.env     optional; shared by the customer's environments
+#   <customer>/<env>.env      one file per environment (dev, sit, uat, ...)
+#
+# Settings are read in that order, later sources winning, and finally any
+# CAMUNDA_* variable already exported in the shell wins over them all.
+# Without a customer, <env>.env files directly in the folder are used.
+#
+# The customer and environment come from, in order: the -c/--customer and
+# -e/--environment-name options; CAMUNDA_CUSTOMER and CAMUNDA_ENV; the
+# saved default ('c8-profile use', kept in .current). A saved environment
+# is used only with the saved customer, never with one chosen elsewhere.
 #
 # Profiles are parsed, never sourced: only CAMUNDA_* assignments are read,
 # and nothing in them is executed or expanded. An optional leading 'export'
@@ -71,7 +80,8 @@ camunda_usage_error() {
 #
 # Handles the options every script shares, from the front of "$@":
 #
-#   -e, --environment-name ENV   sets CAMUNDA_ENV (also -eENV, --environment-name=ENV)
+#   -c, --customer NAME          chooses the customer (also -cNAME, --customer=NAME)
+#   -e, --environment-name ENV   chooses the environment (also -eENV, --environment-name=ENV)
 #   -h, --help                   calls the script's usage function and exits
 #
 # Sets _camunda_shift to how many arguments it used; anything else starting
@@ -86,18 +96,22 @@ camunda_usage_error() {
 #       esac
 #   done
 camunda_common_option() {
+    _cco_what=
     case $1 in
-        -e | --environment-name)
-            [ $# -ge 2 ] || camunda_usage_error "option '$1' needs an environment name"
-            _cco_env=$2
+        -c | --customer | -e | --environment-name)
+            [ $# -ge 2 ] || camunda_usage_error "option '$1' needs a name"
+            _cco_opt=$1
+            _cco_val=$2
             _camunda_shift=2
             ;;
-        --environment-name=*)
-            _cco_env=${1#*=}
+        --customer=* | --environment-name=*)
+            _cco_opt=${1%%=*}
+            _cco_val=${1#*=}
             _camunda_shift=1
             ;;
-        -e?*)
-            _cco_env=${1#-e}
+        -c?* | -e?*)
+            _cco_opt=$(printf '%s' "$1" | cut -c1-2)
+            _cco_val=${1#??}
             _camunda_shift=1
             ;;
         -h | --help)
@@ -106,8 +120,11 @@ camunda_common_option() {
             ;;
         *) camunda_usage_error "unknown option '$1'" ;;
     esac
-    [ -n "$_cco_env" ] || camunda_usage_error "option '${1%%=*}' needs an environment name"
-    CAMUNDA_ENV=$_cco_env
+    [ -n "$_cco_val" ] || camunda_usage_error "option '$_cco_opt' needs a name"
+    case $_cco_opt in
+        -c | --customer) _camunda_opt_customer=$_cco_val ;;
+        *) _camunda_opt_env=$_cco_val ;;
+    esac
 }
 
 # --- temporary files ----------------------------------------------------
@@ -179,7 +196,7 @@ _camunda_read_profile() {
         # Only CAMUNDA_* keys are ours; anything else (ZEEBE_*, ...) is
         # left alone for the tools that use it.
         case $_crp_key in
-            CAMUNDA_ENV | CAMUNDA_CONFIG_DIR | CAMUNDA_TMPDIR)
+            CAMUNDA_ENV | CAMUNDA_CUSTOMER | CAMUNDA_CONFIG_DIR | CAMUNDA_TMPDIR)
                 # These choose which profile to read, or belong to the run.
                 camunda_warn "$_crp_where: ignoring $_crp_key (set it in the shell instead)"
                 continue
@@ -243,13 +260,29 @@ _camunda_require() {
     for _cr_var in "$@"; do
         eval "_cr_val=\${$_cr_var:-}"
         [ -n "$_cr_val" ] ||
-            camunda_die "$_cr_var is not set for environment '$CAMUNDA_ENV'"
+            camunda_die "$_cr_var is not set for '$CAMUNDA_LABEL'"
     done
 }
 
-# Lists the environments that have a profile.
+# camunda_list_customers
+#
+# Lists the customers: the folders in the config directory.
+camunda_list_customers() {
+    for _clc_dir in "$_camunda_config_dir"/*/; do
+        [ -d "$_clc_dir" ] || continue
+        _clc_dir=${_clc_dir%/}
+        printf '%s\n' "${_clc_dir##*/}"
+    done
+}
+
+# camunda_list_envs [CUSTOMER]
+#
+# Lists the environments that have a profile, for CUSTOMER (default: the
+# selected one; none means the files directly in the config directory).
 camunda_list_envs() {
-    for _cle_file in "$_camunda_config_dir"/*.env; do
+    _cle_dir=$_camunda_config_dir${1:+/$1}
+    [ $# -gt 0 ] || _cle_dir=$_camunda_profile_dir
+    for _cle_file in "$_cle_dir"/*.env; do
         [ -f "$_cle_file" ] || continue
         _cle_name=${_cle_file##*/}
         _cle_name=${_cle_name%.env}
@@ -257,36 +290,125 @@ camunda_list_envs() {
     done
 }
 
+# Fails unless $1 is a usable customer or environment name.
+_camunda_check_name() {
+    case $2 in
+        common | *[!A-Za-z0-9_-]* | -*) camunda_die "invalid $1 name '$2'" ;;
+    esac
+}
+
+# camunda_select_profile [ENV]
+#
+# Works out which customer and environment are meant (see "Profiles" at the
+# top), without reading any profile. Sets CAMUNDA_CUSTOMER and CAMUNDA_ENV
+# (either may be empty), CAMUNDA_CUSTOMER_FROM and CAMUNDA_ENV_FROM (where
+# each came from, for c8-profile), CAMUNDA_LABEL ("customer/env", or just
+# "env" without a customer) and _camunda_profile_dir.
+camunda_select_profile() {
+    _camunda_config_dir=${CAMUNDA_CONFIG_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/camunda}
+    _camunda_state_file=$_camunda_config_dir/.current
+
+    _csp_saved_customer=
+    _csp_saved_env=
+    if [ -f "$_camunda_state_file" ]; then
+        while IFS='=' read -r _csp_key _csp_val; do
+            case $_csp_key in
+                customer) _csp_saved_customer=$_csp_val ;;
+                env) _csp_saved_env=$_csp_val ;;
+            esac
+        done <"$_camunda_state_file"
+    fi
+
+    if [ -n "${_camunda_opt_customer:-}" ]; then
+        CAMUNDA_CUSTOMER=$_camunda_opt_customer
+        CAMUNDA_CUSTOMER_FROM=--customer
+    elif [ -n "${CAMUNDA_CUSTOMER:-}" ]; then
+        CAMUNDA_CUSTOMER_FROM=CAMUNDA_CUSTOMER
+    elif [ -n "$_csp_saved_customer" ]; then
+        CAMUNDA_CUSTOMER=$_csp_saved_customer
+        CAMUNDA_CUSTOMER_FROM="saved default"
+    else
+        CAMUNDA_CUSTOMER=
+        CAMUNDA_CUSTOMER_FROM=none
+    fi
+
+    if [ -n "${1:-}" ]; then
+        CAMUNDA_ENV=$1
+        CAMUNDA_ENV_FROM=argument
+    elif [ -n "${_camunda_opt_env:-}" ]; then
+        CAMUNDA_ENV=$_camunda_opt_env
+        CAMUNDA_ENV_FROM=--environment-name
+    elif [ -n "${CAMUNDA_ENV:-}" ]; then
+        CAMUNDA_ENV_FROM=CAMUNDA_ENV
+    elif [ -n "$_csp_saved_env" ] && [ "$CAMUNDA_CUSTOMER" = "$_csp_saved_customer" ]; then
+        # Only with the customer it was saved for: 'prod' means something
+        # different for each customer.
+        CAMUNDA_ENV=$_csp_saved_env
+        CAMUNDA_ENV_FROM="saved default"
+    else
+        CAMUNDA_ENV=
+        CAMUNDA_ENV_FROM=none
+    fi
+
+    if [ -n "$CAMUNDA_CUSTOMER" ]; then
+        _camunda_check_name customer "$CAMUNDA_CUSTOMER"
+        _camunda_profile_dir=$_camunda_config_dir/$CAMUNDA_CUSTOMER
+        CAMUNDA_LABEL=$CAMUNDA_CUSTOMER/$CAMUNDA_ENV
+    else
+        _camunda_profile_dir=$_camunda_config_dir
+        CAMUNDA_LABEL=$CAMUNDA_ENV
+    fi
+    if [ -n "$CAMUNDA_ENV" ]; then
+        _camunda_check_name environment "$CAMUNDA_ENV"
+    fi
+}
+
 # camunda_load_profile [ENV]
 #
-# Loads the profile for ENV (default: $CAMUNDA_ENV, which the -e option of
-# camunda_common_option sets), checks it,
-# and derives CAMUNDA_API_URL (the /v2 base URL). Call once per script.
+# Loads the profile for the selected customer and environment (ENV, if
+# given, overrides the environment), checks it, and derives CAMUNDA_API_URL
+# (the /v2 base URL). Call once per script.
 camunda_load_profile() {
-    CAMUNDA_ENV=${1:-${CAMUNDA_ENV:-}}
-    _camunda_config_dir=${CAMUNDA_CONFIG_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/camunda}
+    camunda_select_profile "${1:-}"
     _camunda_cache_dir=${XDG_CACHE_HOME:-$HOME/.cache}/camunda
 
-    if [ -z "$CAMUNDA_ENV" ]; then
-        _clp_envs=$(camunda_list_envs | tr '\n' ' ')
-        _clp_envs=${_clp_envs% }
-        camunda_die "no environment selected: use -e/--environment-name ENV or set CAMUNDA_ENV" \
-            "(profiles in $_camunda_config_dir: ${_clp_envs:-none})"
+    if [ -n "$CAMUNDA_CUSTOMER" ] && [ ! -d "$_camunda_profile_dir" ]; then
+        _clp_list=$(camunda_list_customers | paste -s -d ' ' -)
+        camunda_die "no customer '$CAMUNDA_CUSTOMER': $_camunda_profile_dir not found" \
+            "(customers: ${_clp_list:-none})"
     fi
-    case $CAMUNDA_ENV in
-        common | *[!A-Za-z0-9_-]*) camunda_die "invalid environment name '$CAMUNDA_ENV'" ;;
-    esac
+    if [ -z "$CAMUNDA_ENV" ]; then
+        _clp_list=$(camunda_list_envs | paste -s -d ' ' -)
+        if [ -n "$CAMUNDA_CUSTOMER" ]; then
+            camunda_die "no environment selected for customer '$CAMUNDA_CUSTOMER': use" \
+                "-e/--environment-name ENV, CAMUNDA_ENV or 'c8-profile use $CAMUNDA_CUSTOMER ENV'" \
+                "(environments: ${_clp_list:-none})"
+        fi
+        _clp_customers=$(camunda_list_customers | paste -s -d ' ' -)
+        camunda_die "no environment selected: use -e/--environment-name ENV or set CAMUNDA_ENV," \
+            "or choose a customer with 'c8-profile use CUSTOMER ENV'" \
+            "(customers: ${_clp_customers:-none}; environments without one: ${_clp_list:-none})"
+    fi
 
-    _clp_profile=$_camunda_config_dir/$CAMUNDA_ENV.env
-    [ -f "$_clp_profile" ] ||
-        camunda_die "no profile for '$CAMUNDA_ENV': $_clp_profile not found"
+    _clp_profile=$_camunda_profile_dir/$CAMUNDA_ENV.env
+    if [ ! -f "$_clp_profile" ]; then
+        if [ -z "$CAMUNDA_CUSTOMER" ] && [ -n "$(camunda_list_customers)" ]; then
+            camunda_die "no profile for '$CAMUNDA_ENV' without a customer: choose one with" \
+                "-c/--customer, CAMUNDA_CUSTOMER or 'c8-profile use'" \
+                "(customers: $(camunda_list_customers | paste -s -d ' ' -))"
+        fi
+        camunda_die "no profile for '$CAMUNDA_LABEL': $_clp_profile not found"
+    fi
 
     umask 077
     _camunda_init_tmp
 
-    _camunda_preset=$(env | sed -n 's/^\(CAMUNDA_[A-Z0-9_]*\)=.*/\1/p' | tr '\n' ' ')
+    _camunda_preset=$(env | sed -n 's/^\(CAMUNDA_[A-Z0-9_]*\)=.*/\1/p' | paste -s -d ' ' -)
     if [ -f "$_camunda_config_dir/common.env" ]; then
         _camunda_read_profile "$_camunda_config_dir/common.env"
+    fi
+    if [ -n "$CAMUNDA_CUSTOMER" ] && [ -f "$_camunda_profile_dir/common.env" ]; then
+        _camunda_read_profile "$_camunda_profile_dir/common.env"
     fi
     _camunda_read_profile "$_clp_profile"
 
@@ -300,7 +422,7 @@ camunda_load_profile() {
     CAMUNDA_CLUSTER_REGION=${CAMUNDA_CLUSTER_REGION:-${CAMUNDA_CLIENT_CLOUD_REGION:-}}
     if [ -z "${CAMUNDA_REST_ADDRESS:-}" ]; then
         [ "$CAMUNDA_CLIENT_MODE" = saas ] ||
-            camunda_die "CAMUNDA_REST_ADDRESS is not set for environment '$CAMUNDA_ENV'"
+            camunda_die "CAMUNDA_REST_ADDRESS is not set for '$CAMUNDA_LABEL'"
         _camunda_require CAMUNDA_CLUSTER_REGION CAMUNDA_CLUSTER_ID
         CAMUNDA_REST_ADDRESS="https://$CAMUNDA_CLUSTER_REGION.zeebe.camunda.io/$CAMUNDA_CLUSTER_ID"
     fi
@@ -323,7 +445,7 @@ camunda_load_profile() {
             # client or audience in a profile starts a fresh cache entry.
             _clp_key=$(printf '%s|%s|%s|%s' "$CAMUNDA_OAUTH_URL" "$CAMUNDA_CLIENT_ID" \
                 "${CAMUNDA_TOKEN_AUDIENCE:-}" "${CAMUNDA_TOKEN_SCOPE:-}" | cksum | cut -d' ' -f1)
-            _camunda_token_file=$_camunda_cache_dir/token-$CAMUNDA_ENV-$_clp_key
+            _camunda_token_file=$_camunda_cache_dir/token-${CAMUNDA_CUSTOMER:+$CAMUNDA_CUSTOMER.}$CAMUNDA_ENV-$_clp_key
             ;;
         basic)
             _camunda_require CAMUNDA_BASIC_AUTH_USERNAME CAMUNDA_BASIC_AUTH_PASSWORD
@@ -377,7 +499,7 @@ _camunda_request_token() {
             case $_crt_status in
                 400 | 401 | 403)
                     camunda_warn "the identity provider rejected CAMUNDA_CLIENT_ID/CAMUNDA_CLIENT_SECRET" \
-                        "for '$CAMUNDA_ENV'; check both come from the same, current client"
+                        "for '$CAMUNDA_LABEL'; check both come from the same, current client"
                     ;;
             esac
             camunda_die "token request to $CAMUNDA_OAUTH_URL returned HTTP $_crt_status"
@@ -754,7 +876,7 @@ camunda_resolve_versions() {
         jq -r --arg id "$_crv_id" 'select(.processDefinitionId == $id) | .version' "$_crv_defs" |
             sort -n >"$_crv_deployed"
         if [ ! -s "$_crv_deployed" ]; then
-            camunda_warn "no deployed versions of '$_crv_id' in '$CAMUNDA_ENV'"
+            camunda_warn "no deployed versions of '$_crv_id' in '$CAMUNDA_LABEL'"
             return 1
         fi
         camunda_select_versions "$@" <"$_crv_deployed" >"$CAMUNDA_TMPDIR/selected" || _crv_status=$?
@@ -780,7 +902,7 @@ camunda_resolve_versions() {
         BEGIN { while ((getline line <targets) > 0) { split(line, f, " "); found[f[1] " " f[2]] = 1 } }
         !found[$0]' "$_crv_req" |
         while IFS= read -r _crv_line; do
-            camunda_warn "not deployed in '$CAMUNDA_ENV', skipped: $_crv_line"
+            camunda_warn "not deployed in '$CAMUNDA_LABEL', skipped: $_crv_line"
         done
     if [ "$(wc -l <"$CAMUNDA_TARGETS")" -lt "$(wc -l <"$_crv_req")" ]; then
         _crv_status=1
@@ -946,16 +1068,16 @@ camunda_is_protected() {
 # camunda_confirm "cancel 12 process instances"
 #
 # Call before any change. In a protected environment, asks the user to type
-# the environment name, unless CAMUNDA_ASSUME_YES=1 (set it from a -y/--yes
-# option).
+# the customer and environment ("acme/prod", or just "prod" without a
+# customer), unless CAMUNDA_ASSUME_YES=1 (set it from a -y/--yes option).
 # Not tied to HTTP methods: the API also uses POST for read-only searches.
 camunda_confirm() {
     camunda_is_protected || return 0
     [ "${CAMUNDA_ASSUME_YES:-}" = 1 ] && return 0
     (exec </dev/tty) 2>/dev/null ||
-        camunda_die "refusing to $1 in '$CAMUNDA_ENV' without confirmation (no terminal; use -y/--yes)"
-    printf "About to %s in '%s'. Type the environment name to continue: " "$1" "$CAMUNDA_ENV" >/dev/tty
+        camunda_die "refusing to $1 in '$CAMUNDA_LABEL' without confirmation (no terminal; use -y/--yes)"
+    printf "About to %s in '%s'. Type '%s' to continue: " "$1" "$CAMUNDA_LABEL" "$CAMUNDA_LABEL" >/dev/tty
     _cc_answer=
     read -r _cc_answer </dev/tty || :
-    [ "$_cc_answer" = "$CAMUNDA_ENV" ] || camunda_die "aborted"
+    [ "$_cc_answer" = "$CAMUNDA_LABEL" ] || camunda_die "aborted"
 }
