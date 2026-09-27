@@ -46,7 +46,10 @@ Processes are listed in the order given. Exits with status 1 if any
 process has no deployed versions.
 
 Options:
-  -e, --environment-name ENV  environment profile to use (default: \$CAMUNDA_ENV)
+  -c, --customer NAME         customer profile to use (default: \$CAMUNDA_CUSTOMER,
+                              or the one chosen with c8-profile use)
+  -e, --environment-name ENV  environment to use (default: \$CAMUNDA_ENV, or
+                              the one chosen with c8-profile use)
   -h, --help                  show this help and exit
 EOF
 }
@@ -98,7 +101,7 @@ missing=$(jq -n -r --rawfile ids "$ids" --slurpfile items "$versions" '
 ')
 if [ -n "$missing" ]; then
     printf '%s\n' "$missing" | while IFS= read -r id; do
-        camunda_warn "no deployed versions of '$id' in '$CAMUNDA_ENV'"
+        camunda_warn "no deployed versions of '$id' in '$CAMUNDA_LABEL'"
     done
     exit 1
 fi

@@ -78,7 +78,10 @@ Options:
   -n, --dry-run               show what would be cancelled; change nothing
   -y, --yes                   don't ask for confirmation (see
                               CAMUNDA_PROTECTED in the README)
-  -e, --environment-name ENV  environment profile to use (default: \$CAMUNDA_ENV)
+  -c, --customer NAME         customer profile to use (default: \$CAMUNDA_CUSTOMER,
+                              or the one chosen with c8-profile use)
+  -e, --environment-name ENV  environment to use (default: \$CAMUNDA_ENV, or
+                              the one chosen with c8-profile use)
   -h, --help                  show this help and exit
 EOF
 }
@@ -133,17 +136,17 @@ fi
 if [ -n "$dry_run" ]; then
     awk '{ print $3, $4, $5 }' "$tmp/plan"
     printf '%s: dry run in %s: would cancel %s instance(s): %s; nothing changed\n' \
-        "${0##*/}" "$CAMUNDA_ENV" "$total" "$summary" >&2
+        "${0##*/}" "$CAMUNDA_LABEL" "$total" "$summary" >&2
     exit "$status"
 fi
 
 if [ "$roots" -eq 0 ]; then
-    printf '%s: no active instances to cancel in %s\n' "${0##*/}" "$CAMUNDA_ENV" >&2
+    printf '%s: no active instances to cancel in %s\n' "${0##*/}" "$CAMUNDA_LABEL" >&2
     exit "$status"
 fi
 
 camunda_confirm "cancel $total instance(s) ($summary)"
 camunda_run_batches /process-instances/cancellation '{}' <"$tmp/counts" || status=1
 printf '%s: started cancelling %s root instance(s) in %s; the instances they called end with them\n' \
-    "${0##*/}" "$CAMUNDA_BATCHED" "$CAMUNDA_ENV" >&2
+    "${0##*/}" "$CAMUNDA_BATCHED" "$CAMUNDA_LABEL" >&2
 exit "$status"
