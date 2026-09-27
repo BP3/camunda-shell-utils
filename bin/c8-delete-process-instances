@@ -85,7 +85,10 @@ Options:
                               ignoring the call trees they belong to
   -y, --yes                   don't ask for confirmation (see
                               CAMUNDA_PROTECTED in the README)
-  -e, --environment-name ENV  environment profile to use (default: \$CAMUNDA_ENV)
+  -c, --customer NAME         customer profile to use (default: \$CAMUNDA_CUSTOMER,
+                              or the one chosen with c8-profile use)
+  -e, --environment-name ENV  environment to use (default: \$CAMUNDA_ENV, or
+                              the one chosen with c8-profile use)
   -h, --help                  show this help and exit
 EOF
 }
@@ -206,12 +209,12 @@ fi
 if [ -n "$dry_run" ]; then
     awk '{ print $3, $4, $5 }' "$tmp/plan"
     printf '%s: dry run in %s: would delete %s instance(s): %s; nothing changed\n' \
-        "${0##*/}" "$CAMUNDA_ENV" "$total" "$summary" >&2
+        "${0##*/}" "$CAMUNDA_LABEL" "$total" "$summary" >&2
     exit "$status"
 fi
 
 if [ "$total" -eq 0 ]; then
-    printf '%s: no finished instances to delete in %s\n' "${0##*/}" "$CAMUNDA_ENV" >&2
+    printf '%s: no finished instances to delete in %s\n' "${0##*/}" "$CAMUNDA_LABEL" >&2
     exit "$status"
 fi
 
@@ -243,5 +246,5 @@ for target in $(awk '{ print $1 "/" $2 }' "$tmp/plan" | awk '!seen[$0]++'); do
         rm -f "$batch"
     done
 done
-printf '%s: started deleting %s instance(s) in %s\n' "${0##*/}" "$deleted" "$CAMUNDA_ENV" >&2
+printf '%s: started deleting %s instance(s) in %s\n' "${0##*/}" "$deleted" "$CAMUNDA_LABEL" >&2
 exit "$status"

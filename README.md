@@ -18,61 +18,106 @@ other POSIX shells, against both Camunda SaaS and self-managed clusters.
    ln -s "$PWD/bin/c8-topology" ~/bin/
    ```
 
-2. Create one profile per environment in `~/.config/camunda/`, starting from
-   the examples in [`profiles/`](profiles/):
+2. Create a folder per customer in `~/.config/camunda/`, with one profile
+   per environment, starting from the examples in [`profiles/`](profiles/):
 
    ```sh
-   mkdir -p ~/.config/camunda
+   mkdir -p ~/.config/camunda/acme
    cp profiles/common.env.example ~/.config/camunda/common.env
-   cp profiles/saas.env.example   ~/.config/camunda/dev.env   # then sit, uat, prod ...
-   chmod 600 ~/.config/camunda/*.env
+   cp profiles/saas.env.example   ~/.config/camunda/acme/dev.env   # then sit, uat, prod ...
+   chmod 600 ~/.config/camunda/common.env ~/.config/camunda/*/*.env
    ```
 
    Then fill in each environment's cluster ID and client credentials.
 
-3. Check that it works:
+3. Choose the customer and environment, and check that it works:
 
    ```sh
-   c8-topology -e dev
+   c8-profile use acme dev
+   c8-topology
    ```
 
-## Environments and profiles
+## Customers, environments and profiles
 
-Every script takes `-e ENV` or `--environment-name ENV`, or falls back to
-`$CAMUNDA_ENV`. If neither is set, the script stops rather than guessing.
+Profiles live in `~/.config/camunda/`, with a folder per customer and a file
+per environment:
 
-Usually you work in one environment for a while, so set it once for the
-shell session and leave it out of each command:
-
-```sh
-export CAMUNDA_ENV=dev
-c8-list-processes | grep PATTERN | c8-list-process-versions
+```
+~/.config/camunda/
+  common.env            # shared by every customer (e.g. SaaS URLs)
+  acme/
+    common.env          # shared by acme's environments (e.g. region)
+    dev.env  sit.env  uat.env  prod.env
+  globex/
+    dev.env  prod.env
 ```
 
-Use `-e` for a one-off command against a different environment. It takes
-precedence over `CAMUNDA_ENV`:
+If you only work with one set of environments, you can skip the customer
+folders and put the `<env>.env` files directly in `~/.config/camunda/`.
+
+### Choosing which one to use
+
+Each script uses the first of these that's set:
+
+1. **Options:** `-c`/`--customer NAME` and `-e`/`--environment-name ENV`
+2. **Shell variables:** `CAMUNDA_CUSTOMER` and `CAMUNDA_ENV`
+3. **The saved default:** set with `c8-profile use`
+
+If no environment is chosen, the script stops rather than guessing. A saved
+environment only applies together with the saved customer: pointing one
+shell at another customer never carries a `prod` across.
+
+`c8-profile` shows and switches profiles:
 
 ```sh
-c8-list-processes -e uat
+c8-profile                  # what's in effect, where each choice came from, and its settings
+c8-profile list             # every customer/environment; '*' marks the one in effect
+c8-profile use acme dev     # save a default for every terminal (also: c8-profile use acme/dev)
+c8-profile clear            # forget the saved default
 ```
 
-In a pipeline, `-e` applies only to the command it's given to, so each
-command needs its own:
+The saved default is shared by all your terminals. To work with a different
+customer or environment in one terminal only, set the shell variables there,
+or use `-c`/`-e` for a single command:
+
+```sh
+export CAMUNDA_CUSTOMER=globex CAMUNDA_ENV=uat   # this terminal only
+c8-list-processes -c acme -e prod                # this command only
+```
+
+In a pipeline, `-c`/`-e` and a prefix assignment such as
+`CAMUNDA_ENV=uat c8-list-processes | ...` apply only to the command they're
+given to. Everything after the `|` uses whatever else is in effect, so
+either give each command its own options or `export` the variables:
 
 ```sh
 c8-list-processes -e uat | grep PATTERN | c8-list-process-versions -e uat
 ```
 
-The same goes for a prefix assignment: `CAMUNDA_ENV=uat c8-list-processes | ...`
-only sets the environment for the first command. Everything after the `|`
-would still use your exported value, or stop if there isn't one.
+### Showing the profile in your prompt
+
+`c8-profile prompt` prints the customer and environment in effect, e.g.
+`acme/prod`, or nothing. Put it in your shell prompt, so you can always see
+where your next command will go:
+
+```sh
+# zsh (~/.zshrc)
+setopt PROMPT_SUBST
+PROMPT='[$(c8-profile prompt)] '$PROMPT
+
+# bash (~/.bashrc)
+PS1='[$(c8-profile prompt)] '$PS1
+```
+
+### Settings
 
 Settings are loaded in this order, and later sources override earlier ones:
 
 | Source | Purpose |
 |---|---|
-| `~/.config/camunda/common.env` | shared values, e.g. SaaS region (optional) |
-| `~/.config/camunda/<env>.env` | one per environment: cluster, credentials |
+| `~/.config/camunda/common.env` | shared by every customer, e.g. SaaS URLs (optional) |
+| `~/.config/camunda/<customer>/common.env` | shared by the customer's environments, e.g. region (optional) |
+| `~/.config/camunda/<customer>/<env>.env` | one per environment: cluster, credentials |
 | exported `CAMUNDA_*` variables | one-off overrides, CI (a warning shows what was overridden) |
 
 Profiles are *parsed*, not sourced. Only `CAMUNDA_*` lines are read, and
@@ -100,7 +145,8 @@ Use `CAMUNDA_CONFIG_DIR` to keep profiles somewhere else.
 - **File permissions:** you get a warning if a profile is readable by other
   users.
 - **Confirmation:** scripts that change anything ask you to type the
-  environment name before going ahead, in every environment. `-y`/`--yes`
+  customer and environment (e.g. `acme/prod`) before going ahead, in every
+  environment. `-y`/`--yes`
   skips the prompt for one command. Set `CAMUNDA_PROTECTED='false'` in a
   profile to stop the prompts for that environment. Without a terminal
   (e.g. in CI), a script that would ask stops instead, unless given `-y`
@@ -113,6 +159,7 @@ Each takes short and long options; `--help` describes them.
 
 | Script | Description |
 |---|---|
+| `c8-profile` | Show, list and switch customer and environment profiles; `c8-profile prompt` for your shell prompt |
 | `c8-topology` | Show brokers, partitions and version, a quick way to check a profile |
 | `c8-list-processes` | List deployed processes as `"Process Name" processDefinitionId` |
 | `c8-list-process-versions` | List each version of the named or piped-in processes as `processDefinitionId version` |
@@ -126,8 +173,8 @@ other and with standard tools:
 c8-list-processes | grep PATTERN | c8-list-process-versions
 ```
 
-(with `CAMUNDA_ENV` exported, as in
-[Environments and profiles](#environments-and-profiles)).
+(with a customer and environment chosen, as in
+[Customers, environments and profiles](#customers-environments-and-profiles)).
 
 Scripts that change things have a `-n`/`--dry-run` option, which shows
 what they would do without changing anything. Try that first:
@@ -161,7 +208,7 @@ is the minimal template. Start each new file with the same license header:
 
 Options are parsed with a plain `while`/`case` loop, since `getopts` has no
 long options. The script's own options come first. `camunda_common_option`
-handles the shared ones (`-e`/`--environment-name`, `-h`/`--help`, which calls
+handles the shared ones (`-c`/`--customer`, `-e`/`--environment-name`, `-h`/`--help`, which calls
 the script's `usage` function) and rejects unknown options:
 
 ```sh
@@ -178,7 +225,7 @@ done
 Then:
 
 ```sh
-camunda_load_profile                          # uses -e, or $CAMUNDA_ENV
+camunda_load_profile                          # uses -c/-e, the shell variables, or the saved default
 camunda_api GET /topology                     # path is relative to /v2
 
 camunda_api POST /process-instances/search --data @query.json
