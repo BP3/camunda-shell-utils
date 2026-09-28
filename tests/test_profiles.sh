@@ -86,55 +86,55 @@ test_missing_settings_are_reported() {
 }
 
 test_no_environment_chosen() {
-    run c8 c8-topology
+    run c8sh cluster topology
     assert_status 1
     assert_stderr_has 'no environment selected'
     assert_stderr_has 'mock prod'
 }
 
 test_unknown_and_invalid_environments() {
-    run c8 c8-topology -e nosuch
+    run c8sh cluster topology -e nosuch
     assert_status 1
     assert_stderr_has "no profile for 'nosuch'"
-    run c8 c8-topology -e ../x
+    run c8sh cluster topology -e ../x
     assert_status 1
     assert_stderr_has "invalid environment name '../x'"
-    run c8 c8-topology -e common
+    run c8sh cluster topology -e common
     assert_status 1
 }
 
 test_option_forms() {
     for form in '-e mock' '-emock' '--environment-name mock' '--environment-name=mock'; do
         # shellcheck disable=SC2086
-        run c8 c8-topology $form
+        run c8sh cluster topology $form
         assert_status 0
         assert_stdout_has '"gatewayVersion": "8.9.0"'
     done
     # -e wins over CAMUNDA_ENV. (A subshell, not a prefix assignment: some
     # shells keep a prefix assignment on a function call set afterwards.)
-    (CAMUNDA_ENV=nosuch && export CAMUNDA_ENV && run c8 c8-topology -e mock)
+    (CAMUNDA_ENV=nosuch && export CAMUNDA_ENV && run c8sh cluster topology -e mock)
     assert_status 0
 }
 
 test_option_mistakes() {
-    run c8 c8-topology -x
+    run c8sh cluster topology -x
     assert_status 2
     assert_stderr_has "unknown option '-x'"
-    run c8 c8-topology -e
+    run c8sh cluster topology -e
     assert_status 2
-    run c8 c8-topology --environment-name=
+    run c8sh cluster topology --environment-name=
     assert_status 2
-    run c8 c8-topology -e mock extra
+    run c8sh cluster topology -e mock extra
     assert_status 2
     assert_stderr_has "unexpected argument 'extra'"
-    run c8 c8-topology --help
+    run c8sh cluster topology --help
     assert_status 0
-    assert_stdout_has 'Usage: c8-topology'
+    assert_stdout_has 'Usage: c8sh cluster topology'
 }
 
 test_token_is_cached() {
-    run c8 c8-topology -e mock
-    run c8 c8-topology -e mock
+    run c8sh cluster topology -e mock
+    run c8sh cluster topology -e mock
     assert_status 0
     assert_sent '"/oauth/token"' 1
     assert_sent '"/v2/topology"' 2
@@ -142,14 +142,14 @@ test_token_is_cached() {
 }
 
 test_rejected_token_is_forgotten() {
-    run c8 c8-topology -e mock
+    run c8sh cluster topology -e mock
     for f in "$XDG_CACHE_HOME"/camunda/token-mock-*; do
         printf '9999999999\nrevoked\n' >"$f"
     done
-    run c8 c8-topology -e mock
+    run c8sh cluster topology -e mock
     assert_status 1
     assert_stderr_has 'returned HTTP 401'
-    run c8 c8-topology -e mock
+    run c8sh cluster topology -e mock
     assert_status 0
 }
 
@@ -159,7 +159,7 @@ CAMUNDA_REST_ADDRESS=$MOCK_URL
 CAMUNDA_OAUTH_URL=$MOCK_URL/oauth/token
 CAMUNDA_CLIENT_ID=mock-client
 CAMUNDA_CLIENT_SECRET=wrong"
-    run c8 c8-topology -e wrong
+    run c8sh cluster topology -e wrong
     assert_status 1
     assert_stderr_has 'rejected CAMUNDA_CLIENT_ID/CAMUNDA_CLIENT_SECRET'
 }
@@ -171,7 +171,7 @@ CAMUNDA_REST_ADDRESS=$MOCK_URL
 CAMUNDA_OAUTH_URL=$MOCK_URL/oauth/token
 CAMUNDA_CLIENT_ID=odd-client
 CAMUNDA_CLIENT_SECRET=s3cr\"et\\+/&=x %'y"
-    run c8 c8-topology -e odd
+    run c8sh cluster topology -e odd
     assert_status 0
     assert_sent '"client_id": "odd-client"' 1
 }
@@ -185,12 +185,12 @@ test_windows_line_endings_in_profiles() {
     if od -c "$TEST_TMP/stdout" | grep -q '\\r'; then
         fail 'a carriage return got into a setting'
     fi
-    run c8 c8-topology -e crlf
+    run c8sh cluster topology -e crlf
     assert_status 0
 }
 
 test_scripts_have_unix_line_endings() {
-    for f in "$ROOT"/bin/* "$ROOT"/lib/*.sh; do
+    for f in "$ROOT"/bin/* "$ROOT"/libexec/c8sh/* "$ROOT"/lib/*.sh; do
         if od -c "$f" | grep -q '\\r'; then
             fail "$f has Windows line endings"
         fi

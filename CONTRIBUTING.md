@@ -23,7 +23,7 @@ Optional: install `dash` (and `busybox`) so the tests run in them too, and
 `shellcheck`, which CI runs at warning level:
 
 ```sh
-shellcheck --shell=sh --severity=warning bin/* lib/camunda.sh tests/*.sh
+shellcheck --shell=sh --severity=warning bin/* libexec/c8sh/* lib/camunda.sh tests/*.sh
 ```
 
 If you have Docker, you can also run the suite as CI does, on Ubuntu with
@@ -37,13 +37,21 @@ docker run --rm -v "$PWD":/src:ro ubuntu:24.04 sh -c 'apt-get update -q >/dev/nu
 
 ## How a command is put together
 
-Every command in `bin/` follows the same shape. [`bin/c8-topology`](bin/c8-topology)
-is the smallest:
+There's one command on your `PATH`, [`bin/c8sh`](bin/c8sh). It runs
+`c8sh NOUN VERB` by running the file `libexec/c8sh/NOUN-VERB`, so adding a
+command means adding a file there; `c8sh --help` finds it. (A noun that
+handles its own verbs is a single file, `libexec/c8sh/NOUN`, like
+`profile`.) Every command file follows the same shape.
+[`libexec/c8sh/cluster-topology`](libexec/c8sh/cluster-topology) is the
+smallest:
 
-1. **Header**: shebang, license lines, and a comment saying what it does.
-2. **Find the library**: the `self=$0` loop follows symlinks so the command
-   works when linked from `~/bin`, then sources `lib/camunda.sh`.
-3. **`usage`**: the `--help` text. It says what the command prints.
+1. **Header**: shebang, license lines, and a comment whose first line is
+   `# c8sh NOUN VERB - what it does`. `c8sh --help` shows that line.
+2. **Find the library**: the `self=$0` loop follows symlinks, then sources
+   `lib/camunda.sh`, two levels up.
+3. **`usage`**: the `--help` text. It says what the command prints, and
+   names the command as `$_camunda_prog` (`c8sh instance cancel`), as all
+   messages do.
 4. **Options**: a `while`/`case` loop. The command's own options come first;
    `camunda_common_option` handles `-c`, `-e` and `-h` and rejects the rest.
 5. **Operands**: checked before anything talks to the API.
@@ -76,7 +84,7 @@ the command exits.
 
 ## Adding a command: a worked example
 
-Say we want `c8-count-active-instances`: for chosen versions, print
+Say we want `c8sh instance count`: for chosen versions, print
 `processDefinitionId version count`. It takes versions the same ways as the
 cancel and delete commands, so the library does nearly everything:
 
@@ -85,14 +93,14 @@ cancel and delete commands, so the library does nearly everything:
 # SPDX-License-Identifier: MIT
 # Copyright (c) 2026 BP3 Global Inc.
 #
-# c8-count-active-instances - count the active instances of process versions
+# c8sh instance count - count the active instances of process versions
 #
-#   c8-count-active-instances Process_X newest 5
-#   c8-list-process-versions Process_X | c8-count-active-instances
+#   c8sh instance count Process_X newest 5
+#   c8sh version list Process_X | c8sh instance count
 
 set -eu
 
-# Find lib/ next to bin/, following symlinks (e.g. from ~/bin).
+# Find lib/ from libexec/c8sh/, following symlinks.
 self=$0
 while [ -L "$self" ]; do
     link=$(readlink "$self")
@@ -101,17 +109,17 @@ while [ -L "$self" ]; do
         *) self=$(dirname "$self")/$link ;;
     esac
 done
-. "$(cd "$(dirname "$self")/.." && pwd)/lib/camunda.sh"
+. "$(cd "$(dirname "$self")/../.." && pwd)/lib/camunda.sh"
 
 usage() {
     cat <<USAGE
-Usage: ${0##*/} [OPTION]... [PROCESS_ID VERSIONS...]
+Usage: $_camunda_prog [OPTION]... [PROCESS_ID VERSIONS...]
 
 Count the active instances of each process version:
 
   processDefinitionId version count
 
-Versions are chosen as for c8-cancel-process-instances (see its --help), or
+Versions are chosen as for c8sh instance cancel (see its --help), or
 piped in as "processDefinitionId version" lines.
 
 Options:
@@ -150,11 +158,12 @@ Things to notice:
   library's messages (`selected ...`, `not considered ...`) go to stderr.
 - **It only reads.** A command that changes things also needs `--dry-run`,
   `-y`, `camunda_check_keys` and `camunda_confirm`, in that order before the
-  first request: see `bin/c8-cancel-process-instances`.
+  first request: see `libexec/c8sh/instance-cancel`.
 
 Then:
 
-1. Make it executable: `chmod +x bin/c8-count-active-instances`.
+1. Save it as `libexec/c8sh/instance-count` and make it executable:
+   `chmod +x libexec/c8sh/instance-count`. `c8sh --help` now lists it.
 2. Add it to the command table in the README.
 3. Write its tests.
 
@@ -165,14 +174,14 @@ run a command against the mock API and check what it printed, what it exited
 with, and what it sent. This is the example command's test file:
 
 ```sh
-# shellcheck shell=sh
-# c8-count-active-instances. In the fixture, P_A v2 has two active
+# shellcheck shell=sh disable=SC2034 # fixture= is read by tests/lib.sh
+# c8sh instance count. In the fixture, P_A v2 has two active
 # instances (1, a root, and 92, called by P_B's root); P_A v1 has none.
 
 fixture=basic
 
 test_counts_per_version() {
-    run c8 c8-count-active-instances -e mock P_A all
+    run c8sh instance count -e mock P_A all
     assert_status 0
     assert_stdout 'P_A 1 0
 P_A 2 2'
@@ -182,13 +191,13 @@ P_A 2 2'
 test_versions_from_a_pipe() {
     run_with 'P_B 1
 P_A 2
-' c8 c8-count-active-instances -e mock
+' c8sh instance count -e mock
     assert_stdout 'P_B 1 1
 P_A 2 2'
 }
 
 test_only_searches() {
-    run c8 c8-count-active-instances -e mock P_A 2
+    run c8sh instance count -e mock P_A 2
     assert_sent '/search'
     assert_not_sent 'cancellation'
     assert_not_sent 'deletion'
@@ -199,7 +208,8 @@ test_only_searches() {
   Its comments say what each process and instance is for; reuse them where
   you can, and add data (with a comment) where you can't.
 - **`run`** runs a command; **`run_with INPUT`** pipes INPUT into it;
-  **`c8 NAME`** is `bin/NAME` in the shell under test.
+  **`c8sh NOUN VERB`** runs `c8sh` in the shell under test (and **`c8
+  NAME`** runs `bin/NAME`, for the old command names).
 - **Profiles:** `-e mock` needs no confirmation and `-e prod` does. Set
   `profiles=customers` for the per-customer layout (acme dev/prod, globex dev).
 - **Confirmation:** there's never a terminal. `answer 'prod'` types the next
@@ -217,7 +227,7 @@ swallowed the operands meant for something else.
 Run just your file while working, then everything:
 
 ```sh
-TEST_SHELLS=dash tests/run.sh tests/test_count_active_instances.sh
+TEST_SHELLS=dash tests/run.sh tests/test_instance_count.sh
 tests/run.sh
 ```
 

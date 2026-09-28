@@ -53,4 +53,4 @@ jobs:
         run: |
           shellcheck --version
           shellcheck --shell=sh --severity=warning \
-            bin/* lib/camunda.sh tests/run.sh tests/lib.sh tests/test_*.sh
+            bin/* libexec/c8sh/* lib/camunda.sh tests/run.sh tests/lib.sh tests/test_*.sh

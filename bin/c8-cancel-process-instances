@@ -2,23 +2,12 @@
 # SPDX-License-Identifier: MIT
 # Copyright (c) 2026 BP3 Global Inc.
 #
-# c8-cancel-process-instances - cancel the active instances of process versions
+# c8-cancel-process-instances - the old name for 'c8sh instance cancel'
 #
-# Takes "processDefinitionId version" pairs, on the command line or piped in
-# from c8-list-process-versions, and starts one cancellation batch operation
-# per version that has active instances:
-#
-#   c8-list-process-versions Process_X | c8-cancel-process-instances --dry-run
-#
-# The batch operation cancels active root instances, and the engine ends
-# every instance they called, at any depth, whatever its process; the dry
-# run lists all of them. An active instance called from another process is
-# cancelled only with its root, so if that root isn't being cancelled, it's
-# reported and left alone.
+# Kept for now so that existing scripts keep working; it will be removed.
 
 set -eu
 
-# Find lib/ next to bin/, following symlinks (e.g. from ~/bin).
 self=$0
 while [ -L "$self" ]; do
     link=$(readlink "$self")
@@ -27,128 +16,8 @@ while [ -L "$self" ]; do
         *) self=$(dirname "$self")/$link ;;
     esac
 done
-. "$(cd "$(dirname "$self")/.." && pwd)/lib/camunda.sh"
+bin=$(cd "$(dirname "$self")" && pwd)
 
-usage() {
-    cat <<EOF
-Usage: ${0##*/} [OPTION]... [PROCESS_ID VERSIONS...]
-
-Cancel the active instances of the given process versions.
-
-VERSIONS picks from the process's deployed versions. Combine any of:
-
-  670 671                     exact versions
-  27-100, 27 to 100           an inclusive range
-  first-600, 600-last         from the oldest, or to the newest, deployed
-                              version (600- also works)
-  older than 50, before 50    versions below 50; also '<50', '<=50'
-  newer than 50, after 50     versions above 50; also '>50', '>=50'
-  oldest 10                   the 10 oldest deployed versions
-  newest 5, latest 5          the 5 newest; 'latest' alone means 1
-  all                         every deployed version
-  ... except ..., ... but ... leave out what follows
-
-For example: 'all but newest 5', 'older than 600 except 400-410'. Quote
-anything with < or > so the shell doesn't treat it as a redirection. The
-versions selected are listed on stderr.
-
-With no arguments, read "processDefinitionId version" pairs from stdin, one
-per line, using the last two fields of each line, so the output of
-c8-list-process-versions can be piped in:
-
-  c8-list-process-versions PROCESS_ID | ${0##*/} --dry-run
-
-Output, one line per item, for piping into other commands:
-
-  --dry-run   processDefinitionId version processInstanceKey
-              (each instance that would end: each root, followed by the
-              instances it called)
-  otherwise   processDefinitionId version batchOperationKey
-              (each cancellation started; it runs in the background)
-
-Instances are cancelled as whole call trees: cancelling a root instance ends
-every instance it called, at any depth, whatever their process or version.
-An active instance called from another process ends only with its root: if
-that root isn't being cancelled, it's reported and left alone.
-
-A summary goes to stderr. Exits with status 1 if any requested version
-isn't deployed.
-
-Options:
-  -n, --dry-run               show what would be cancelled; change nothing
-  -y, --yes                   don't ask for confirmation (see
-                              CAMUNDA_PROTECTED in the README)
-  -c, --customer NAME         customer profile to use (default: \$CAMUNDA_CUSTOMER,
-                              or the one chosen with c8-profile use)
-  -e, --environment-name ENV  environment to use (default: \$CAMUNDA_ENV, or
-                              the one chosen with c8-profile use)
-  -h, --help                  show this help and exit
-EOF
-}
-
-dry_run=
-while [ $# -gt 0 ]; do
-    case $1 in
-        -n | --dry-run) dry_run=1; shift ;;
-        -y | --yes) CAMUNDA_ASSUME_YES=1; shift ;;
-        --) shift; break ;;
-        -?*) camunda_common_option "$@"; shift "$_camunda_shift" ;;
-        *) break ;;
-    esac
-done
-camunda_check_version_args "$@"
-camunda_load_profile
-tmp=$CAMUNDA_TMPDIR
-status=0
-
-camunda_resolve_versions "$@" || status=$?
-[ -s "$CAMUNDA_TARGETS" ] || exit "$status"
-
-# The batch operation cancels active root instances; the engine then ends
-# every instance they called, at any depth, whatever its process. Find
-# those too, so the dry run and summary show everything that will end.
-active='{"state": "ACTIVE"}'
-camunda_find_instances '{"state": "ACTIVE", "parentProcessInstanceKey": {"$exists": false}}' "$tmp/roots"
-jq -r '.processInstanceKey' "$tmp/roots" >"$tmp/root-keys"
-camunda_find_descendants "$tmp/root-keys" "$active" "$tmp/called"
-camunda_plan_trees "$tmp/roots" "$tmp/called" >"$tmp/plan"
-
-camunda_count_instances "$tmp/roots" >"$tmp/counts"
-total=$(wc -l <"$tmp/plan" | tr -d ' ')
-roots=$(wc -l <"$tmp/roots" | tr -d ' ')
-versions=$(awk '$4 > 0' "$tmp/counts" | wc -l | tr -d ' ')
-summary="$roots root instance(s) of $versions version(s), with $((total - roots)) instance(s) they called"
-
-# Active called instances of the chosen versions outside those trees stay:
-# they end only with their own root.
-camunda_find_instances '{"state": "ACTIVE", "parentProcessInstanceKey": {"$exists": true}}' "$tmp/called-here"
-jq -c --rawfile plan "$tmp/plan" '
-    ($plan | split("\n") | map(select(. != "") | split(" ")[4] | {key: ., value: true}) | from_entries) as $in
-    | select($in[.processInstanceKey] | not)' "$tmp/called-here" >"$tmp/skipped"
-if [ -s "$tmp/skipped" ]; then
-    camunda_count_instances "$tmp/skipped" | awk '$4 > 0' |
-        while read -r id v _ n; do
-            camunda_warn "$id $v also has $n active instance(s) called from other processes;" \
-                "they are cancelled only with their root instance, which isn't being cancelled"
-        done
-fi
-
-if [ -n "$dry_run" ]; then
-    awk '{ print $3, $4, $5 }' "$tmp/plan"
-    printf '%s: dry run in %s: would cancel %s instance(s): %s; nothing changed\n' \
-        "${0##*/}" "$CAMUNDA_LABEL" "$total" "$summary" >&2
-    exit "$status"
-fi
-
-if [ "$roots" -eq 0 ]; then
-    printf '%s: no active instances to cancel in %s\n' "${0##*/}" "$CAMUNDA_LABEL" >&2
-    exit "$status"
-fi
-
-awk '$4 > 0' "$tmp/counts" >"$tmp/to-cancel"
-camunda_check_keys "$tmp/to-cancel"
-camunda_confirm "cancel $total instance(s) ($summary)"
-camunda_run_batches /process-instances/cancellation '{}' <"$tmp/counts" || status=1
-printf '%s: started cancelling %s root instance(s) in %s; the instances they called end with them\n' \
-    "${0##*/}" "$CAMUNDA_BATCHED" "$CAMUNDA_LABEL" >&2
-exit "$status"
+printf "%s: renamed to 'c8sh instance cancel'; this name will be removed\n" "${0##*/}" >&2
+# shellcheck disable=SC2086 # C8SH_SHELL may be "bash --posix"
+exec ${C8SH_SHELL:-/bin/sh} "$bin/c8sh" instance cancel "$@"

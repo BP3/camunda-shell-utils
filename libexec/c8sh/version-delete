@@ -1,0 +1,230 @@
+#!/bin/sh
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 BP3 Global Inc.
+#
+# c8sh version delete - delete deployed versions of processes
+#
+# Takes "processDefinitionId version" pairs, on the command line or piped in
+# from c8sh version list, and deletes each version
+# (POST /v2/resources/{processDefinitionKey}/deletion). Versions that still
+# have active instances are skipped unless --allow-active is given: cancel
+# those first with c8sh instance cancel.
+#
+#   c8sh version delete --dry-run Process_X all but newest 5
+
+set -eu
+
+# Find lib/ from libexec/c8sh/, following symlinks.
+self=$0
+while [ -L "$self" ]; do
+    link=$(readlink "$self")
+    case $link in
+        /*) self=$link ;;
+        *) self=$(dirname "$self")/$link ;;
+    esac
+done
+. "$(cd "$(dirname "$self")/../.." && pwd)/lib/camunda.sh"
+
+usage() {
+    cat <<EOF
+Usage: $_camunda_prog [OPTION]... [PROCESS_ID VERSIONS...]
+
+Delete deployed versions of a process. A deleted version can't be started
+or recovered; to bring it back, deploy it again.
+
+Versions that still have active instances are skipped: cancel them first
+with c8sh instance cancel, or use --allow-active. Finished instances
+(history) are left alone unless --delete-history is given; to delete them
+following the call-tree rules, use c8sh instance delete first.
+
+Versions already being deleted (draining) are skipped, and so are versions
+already deleted, except with --delete-history: then only their history is
+deleted. To purge the history of every deleted version of a process:
+
+  c8sh version list --deleted PROCESS_ID | $_camunda_prog --delete-history
+
+VERSIONS picks from the process's deployed versions. Combine any of:
+
+  670 671                     exact versions
+  27-100, 27 to 100           an inclusive range
+  first-600, 600-last         from the oldest, or to the newest, deployed
+                              version (600- also works)
+  older than 50, before 50    versions below 50; also '<50', '<=50'
+  newer than 50, after 50     versions above 50; also '>50', '>=50'
+  oldest 10                   the 10 oldest deployed versions
+  newest 5, latest 5          the 5 newest; 'latest' alone means 1
+  all                         every deployed version
+  ... except ..., ... but ... leave out what follows
+
+For example: 'all but newest 5', 'older than 600 except 400-410'. Quote
+anything with < or > so the shell doesn't treat it as a redirection. The
+versions selected are listed on stderr.
+
+With no arguments, read "processDefinitionId version" pairs from stdin, one
+per line, using the last two fields of each line, so the output of
+c8sh version list can be piped in:
+
+  c8sh version list PROCESS_ID | $_camunda_prog --dry-run
+
+Output is "processDefinitionId version" for each version deleted (or, with
+--dry-run, that would be), the same format as c8sh version list.
+A summary and warnings go to stderr: about skipped versions, and when a
+process's latest version, or every version, is deleted. Exits with status 1
+if any requested version isn't deployed, is skipped, or fails to delete.
+
+Options:
+  -n, --dry-run               show what would be deleted; change nothing
+  --allow-active              delete versions with active instances too;
+                              they drain (can't be started, and go once
+                              their instances finish)
+  --delete-history            also delete each version's finished instances,
+                              all of them, ignoring call-tree rules
+                              (Camunda 8.9 and later)
+  -y, --yes                   don't ask for confirmation (see
+                              CAMUNDA_PROTECTED in the README)
+  -c, --customer NAME         customer profile to use (default: \$CAMUNDA_CUSTOMER,
+                              or the one chosen with c8sh profile use)
+  -e, --environment-name ENV  environment to use (default: \$CAMUNDA_ENV, or
+                              the one chosen with c8sh profile use)
+  -h, --help                  show this help and exit
+EOF
+}
+
+dry_run=
+allow_active=
+delete_history=
+while [ $# -gt 0 ]; do
+    case $1 in
+        -n | --dry-run) dry_run=1; shift ;;
+        --allow-active) allow_active=1; shift ;;
+        --delete-history) delete_history=1; shift ;;
+        -y | --yes) CAMUNDA_ASSUME_YES=1; shift ;;
+        --) shift; break ;;
+        -?*) camunda_common_option "$@"; shift "$_camunda_shift" ;;
+        *) break ;;
+    esac
+done
+
+camunda_check_version_args "$@"
+camunda_load_profile
+# Versions already being deleted are skipped. Deleted ones are skipped too,
+# except with --delete-history: asking again purges their history.
+if [ -n "$delete_history" ]; then
+    _camunda_version_states="ACTIVE DELETED"
+else
+    _camunda_version_states=ACTIVE
+fi
+tmp=$CAMUNDA_TMPDIR
+status=0
+
+camunda_resolve_versions "$@" || status=$?
+[ -s "$CAMUNDA_TARGETS" ] || exit "$status"
+
+# --- active instances ----------------------------------------------------
+
+# Any active instance of a version, root or called, keeps it from going.
+camunda_find_instances '{"state": "ACTIVE"}' "$tmp/active"
+camunda_count_instances "$tmp/active" >"$tmp/counts"
+
+if [ -n "$allow_active" ]; then
+    cp "$tmp/counts" "$tmp/delete"
+    draining=$(awk '$4 > 0' "$tmp/counts" | wc -l | tr -d ' ')
+    running=$(awk '{ n += $4 } END { print n + 0 }' "$tmp/counts")
+    if [ "$draining" -gt 0 ]; then
+        camunda_warn "--allow-active: $draining version(s) with $running active instance(s) will drain:" \
+            "they can't be started, and go once their instances finish"
+    fi
+else
+    awk '$4 == 0' "$tmp/counts" >"$tmp/delete"
+    awk '$4 > 0' "$tmp/counts" | while read -r id v _ n; do
+        camunda_warn "skipping $id $v: it has $n active instance(s); cancel them first" \
+            "(c8sh instance cancel $id $v) or use --allow-active"
+    done
+    if awk '$4 > 0 { found = 1 } END { exit !found }' "$tmp/counts"; then
+        status=1
+    fi
+fi
+
+# --- what deleting these means for each process --------------------------
+
+# Warn when a process loses its latest version (new instances would start
+# on an older one) or every version (it's no longer deployed at all).
+jq -n -r --rawfile delete "$tmp/delete" --slurpfile all "$tmp/definitions" '
+    ($all | map(select((.state // "ACTIVE") == "ACTIVE"))) as $defs
+    | ($delete | split("\n") | map(select(. != "") | split(" ") | {id: .[0], v: (.[1] | tonumber)})
+        | group_by(.id) | map({key: .[0].id, value: map(.v)}) | from_entries) as $gone
+    | $defs | group_by(.processDefinitionId)[]
+    | .[0].processDefinitionId as $id
+    | select($gone[$id])
+    | (map(.version) | unique) as $all
+    | ($all - $gone[$id]) as $left
+    | if ($left | length) == 0 then
+        "every deployed version of \($id) is being deleted: the process will no longer be deployed"
+      elif ($gone[$id] | index($all | max)) then
+        "the latest version of \($id) (\($all | max)) is being deleted: new instances will start on version \($left | max)"
+      else empty end
+' | while IFS= read -r line; do camunda_warn "$line"; done
+
+total=$(wc -l <"$tmp/delete" | tr -d ' ')
+processes=$(awk '{ print $1 }' "$tmp/delete" | sort -u | wc -l | tr -d ' ')
+summary="$total version(s) of $processes process(es)"
+purge=$(jq -r --rawfile delete "$tmp/delete" '
+    ($delete | split("\n") | map(select(. != "") | split(" ")[2] | {key: ., value: true}) | from_entries) as $d
+    | select($d[.processDefinitionKey] and .state == "DELETED") | .processDefinitionKey' "$tmp/definitions" | wc -l | tr -d ' ')
+if [ "$purge" -gt 0 ]; then
+    summary="$summary ($purge already deleted: only their history goes)"
+fi
+if [ -n "$delete_history" ]; then
+    summary="$summary, with all their history"
+    camunda_warn "--delete-history: all finished instances of these versions go too, whether or not" \
+        "they belong to call trees that stay (c8sh instance delete follows those rules)"
+fi
+
+if [ -n "$dry_run" ]; then
+    awk '{ print $1, $2 }' "$tmp/delete"
+    printf '%s: dry run in %s: would delete %s; nothing changed\n' \
+        "$_camunda_prog" "$CAMUNDA_LABEL" "$summary" >&2
+    exit "$status"
+fi
+
+if [ "$total" -eq 0 ]; then
+    printf '%s: no process versions to delete in %s\n' "$_camunda_prog" "$CAMUNDA_LABEL" >&2
+    exit "$status"
+fi
+
+# --- delete ------------------------------------------------------------------
+
+# Every key goes into a URL path: check them all before asking, or sending
+# anything.
+camunda_check_keys "$tmp/delete"
+
+camunda_confirm "delete $summary"
+
+if [ -n "$delete_history" ]; then
+    body='{"deleteHistory": true}'
+else
+    body='{}'
+fi
+printf '%s\n' "$body" >"$tmp/delete.json"
+
+deleted=0
+while read -r id v key _; do
+    case $key in
+        '' | *[!0-9]*) camunda_die "refusing to continue: bad processDefinitionKey '$key' for $id $v" ;;
+    esac
+    if camunda_api POST "/resources/$key/deletion" --data @"$tmp/delete.json" >"$tmp/deleted"; then
+        printf '%s %s\n' "$id" "$v"
+        deleted=$((deleted + 1))
+        batch=$(jq -r '.batchOperation.batchOperationKey // empty' "$tmp/deleted" 2>/dev/null || :)
+        if [ -n "$batch" ]; then
+            camunda_warn "$id $v: history is being deleted by batch operation $batch"
+        fi
+    else
+        camunda_warn "could not delete $id $v"
+        status=1
+    fi
+done <"$tmp/delete"
+
+printf '%s: deleted %s of %s process version(s) in %s\n' \
+    "$_camunda_prog" "$deleted" "$total" "$CAMUNDA_LABEL" >&2
+exit "$status"

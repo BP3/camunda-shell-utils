@@ -1,0 +1,47 @@
+#!/bin/sh
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 BP3 Global Inc.
+#
+# c8sh cluster topology - show a cluster's topology (brokers, partitions, version)
+#
+# A quick way to check that an environment's address and credentials work.
+
+set -eu
+
+# Find lib/ from libexec/c8sh/, following symlinks.
+self=$0
+while [ -L "$self" ]; do
+    link=$(readlink "$self")
+    case $link in
+        /*) self=$link ;;
+        *) self=$(dirname "$self")/$link ;;
+    esac
+done
+. "$(cd "$(dirname "$self")/../.." && pwd)/lib/camunda.sh"
+
+usage() {
+    cat <<EOF
+Usage: $_camunda_prog [OPTION]...
+
+Show the topology of the Camunda cluster for an environment.
+
+Options:
+  -c, --customer NAME         customer profile to use (default: \$CAMUNDA_CUSTOMER,
+                              or the one chosen with c8sh profile use)
+  -e, --environment-name ENV  environment to use (default: \$CAMUNDA_ENV, or
+                              the one chosen with c8sh profile use)
+  -h, --help                  show this help and exit
+EOF
+}
+
+while [ $# -gt 0 ]; do
+    case $1 in
+        --) shift; break ;;
+        -?*) camunda_common_option "$@"; shift "$_camunda_shift" ;;
+        *) break ;;
+    esac
+done
+[ $# -eq 0 ] || camunda_usage_error "unexpected argument '$1'"
+
+camunda_load_profile
+camunda_api GET /topology

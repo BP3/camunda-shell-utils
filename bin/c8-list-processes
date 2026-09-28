@@ -2,20 +2,12 @@
 # SPDX-License-Identifier: MIT
 # Copyright (c) 2026 BP3 Global Inc.
 #
-# c8-list-processes - list the processes deployed to a cluster, one per line
+# c8-list-processes - the old name for 'c8sh process list'
 #
-# Output is plain text for piping into other commands:
-#
-#   "Process Name" processDefinitionId
-#
-# The name is a JSON string (so embedded quotes are escaped, and a process
-# without a name shows as ""); the id is always the last field. Names and
-# ids come from the latest version of each process that hasn't been
-# deleted; a process whose versions are all deleted isn't listed.
+# Kept for now so that existing scripts keep working; it will be removed.
 
 set -eu
 
-# Find lib/ next to bin/, following symlinks (e.g. from ~/bin).
 self=$0
 while [ -L "$self" ]; do
     link=$(readlink "$self")
@@ -24,59 +16,8 @@ while [ -L "$self" ]; do
         *) self=$(dirname "$self")/$link ;;
     esac
 done
-. "$(cd "$(dirname "$self")/.." && pwd)/lib/camunda.sh"
+bin=$(cd "$(dirname "$self")" && pwd)
 
-usage() {
-    cat <<EOF
-Usage: ${0##*/} [OPTION]...
-
-List the processes deployed to an environment, sorted by name:
-
-  "Process Name" processDefinitionId
-
-Options:
-  -c, --customer NAME         customer profile to use (default: \$CAMUNDA_CUSTOMER,
-                              or the one chosen with c8-profile use)
-  -e, --environment-name ENV  environment to use (default: \$CAMUNDA_ENV, or
-                              the one chosen with c8-profile use)
-  -h, --help                  show this help and exit
-EOF
-}
-
-while [ $# -gt 0 ]; do
-    case $1 in
-        --) shift; break ;;
-        -?*) camunda_common_option "$@"; shift "$_camunda_shift" ;;
-        *) break ;;
-    esac
-done
-[ $# -eq 0 ] || camunda_usage_error "unexpected argument '$1'"
-
-camunda_load_profile
-
-# Sort here rather than in the API: it can't sort by name when filtering on
-# the latest version. Different processes can share a name (copied BPMN
-# files often do), so the id keeps their order stable.
-camunda_search /process-definitions/search '{"filter":{"isLatestVersion":true}}' \
-    >"$CAMUNDA_TMPDIR/latest"
-
-# A deleted latest version (Camunda 8.9.14+ reports a state) isn't what's
-# deployed: use the newest version still in the engine instead, or leave
-# the process out if every version is deleted.
-jq -c 'select((.state // "ACTIVE") != "DELETED")' "$CAMUNDA_TMPDIR/latest" >"$CAMUNDA_TMPDIR/processes"
-jq -r 'select(.state == "DELETED") | .processDefinitionId' "$CAMUNDA_TMPDIR/latest" >"$CAMUNDA_TMPDIR/recheck"
-if [ -s "$CAMUNDA_TMPDIR/recheck" ]; then
-    split -l 100 "$CAMUNDA_TMPDIR/recheck" "$CAMUNDA_TMPDIR/recheck."
-    for batch in "$CAMUNDA_TMPDIR"/recheck.*; do
-        query=$(jq -R -s -c '{filter: {processDefinitionId: {"$in": split("\n") | map(select(. != ""))}}}' "$batch")
-        camunda_search /process-definitions/search "$query" >>"$CAMUNDA_TMPDIR/older"
-    done
-    jq -c -s 'map(select((.state // "ACTIVE") != "DELETED"))
-        | group_by(.processDefinitionId)[] | max_by(.version)' "$CAMUNDA_TMPDIR/older" >>"$CAMUNDA_TMPDIR/processes"
-fi
-
-jq -r -s '
-    sort_by((.name // "" | ascii_downcase), .processDefinitionId)
-    | .[]
-    | "\(.name // "" | @json) \(.processDefinitionId)"
-' "$CAMUNDA_TMPDIR/processes"
+printf "%s: renamed to 'c8sh process list'; this name will be removed\n" "${0##*/}" >&2
+# shellcheck disable=SC2086 # C8SH_SHELL may be "bash --posix"
+exec ${C8SH_SHELL:-/bin/sh} "$bin/c8sh" process list "$@"

@@ -23,8 +23,9 @@
 # Without a customer, <env>.env files directly in the folder are used.
 #
 # The customer and environment come from, in order: the -c/--customer and
-# -e/--environment-name options; CAMUNDA_CUSTOMER and CAMUNDA_ENV; the
-# saved default ('c8-profile use', kept in .current). A saved environment
+# -e/--environment-name options (after the verb, then before the noun);
+# CAMUNDA_CUSTOMER and CAMUNDA_ENV; the saved default ('c8sh profile use',
+# kept in .current). A saved environment
 # is used only with the saved customer, never with one chosen elsewhere.
 #
 # Profiles are parsed, never sourced: only CAMUNDA_* assignments are read,
@@ -60,19 +61,23 @@ CAMUNDA_SAAS_TOKEN_AUDIENCE='zeebe.camunda.io'
 
 # --- messages -----------------------------------------------------------
 
+# The command's name in messages: "c8sh instance cancel" when run through
+# c8sh (which sets C8SH_PROG), the script's own name otherwise.
+_camunda_prog=${C8SH_PROG:-${0##*/}}
+
 camunda_die() {
-    printf '%s: error: %s\n' "${0##*/}" "$*" >&2
+    printf '%s: error: %s\n' "$_camunda_prog" "$*" >&2
     exit 1
 }
 
 camunda_warn() {
-    printf '%s: warning: %s\n' "${0##*/}" "$*" >&2
+    printf '%s: warning: %s\n' "$_camunda_prog" "$*" >&2
 }
 
 # Reports a command-line mistake and exits with status 2.
 camunda_usage_error() {
-    printf '%s: error: %s\n' "${0##*/}" "$*" >&2
-    printf "Try '%s --help' for more information.\n" "${0##*/}" >&2
+    printf '%s: error: %s\n' "$_camunda_prog" "$*" >&2
+    printf "Try '%s --help' for more information.\n" "$_camunda_prog" >&2
     exit 2
 }
 
@@ -282,7 +287,7 @@ camunda_list_customers() {
 #
 # Lists the environments that have a profile, for CUSTOMER (default: the
 # selected one; none means the files directly in the config directory).
-# shellcheck disable=SC2120 # the argument is optional; c8-profile passes it
+# shellcheck disable=SC2120 # the argument is optional; c8sh profile passes it
 camunda_list_envs() {
     _cle_dir=$_camunda_config_dir${1:+/$1}
     [ $# -gt 0 ] || _cle_dir=$_camunda_profile_dir
@@ -306,9 +311,9 @@ _camunda_check_name() {
 # Works out which customer and environment are meant (see "Profiles" at the
 # top), without reading any profile. Sets CAMUNDA_CUSTOMER and CAMUNDA_ENV
 # (either may be empty), CAMUNDA_CUSTOMER_FROM and CAMUNDA_ENV_FROM (where
-# each came from, for c8-profile), CAMUNDA_LABEL ("customer/env", or just
+# each came from, for c8sh profile), CAMUNDA_LABEL ("customer/env", or just
 # "env" without a customer) and _camunda_profile_dir.
-# CAMUNDA_CUSTOMER_FROM and CAMUNDA_ENV_FROM are read by c8-profile.
+# CAMUNDA_CUSTOMER_FROM and CAMUNDA_ENV_FROM are read by c8sh profile.
 # shellcheck disable=SC2034
 camunda_select_profile() {
     _camunda_config_dir=${CAMUNDA_CONFIG_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/camunda}
@@ -326,8 +331,13 @@ camunda_select_profile() {
         done <"$_camunda_state_file"
     fi
 
+    # -c/-e given to c8sh, before the noun, arrive as C8SH_CUSTOMER and
+    # C8SH_ENV; given after the verb, they win over those.
     if [ -n "${_camunda_opt_customer:-}" ]; then
         CAMUNDA_CUSTOMER=$_camunda_opt_customer
+        CAMUNDA_CUSTOMER_FROM=--customer
+    elif [ -n "${C8SH_CUSTOMER:-}" ]; then
+        CAMUNDA_CUSTOMER=$C8SH_CUSTOMER
         CAMUNDA_CUSTOMER_FROM=--customer
     elif [ -n "${CAMUNDA_CUSTOMER:-}" ]; then
         CAMUNDA_CUSTOMER_FROM=CAMUNDA_CUSTOMER
@@ -344,6 +354,9 @@ camunda_select_profile() {
         CAMUNDA_ENV_FROM=argument
     elif [ -n "${_camunda_opt_env:-}" ]; then
         CAMUNDA_ENV=$_camunda_opt_env
+        CAMUNDA_ENV_FROM=--environment-name
+    elif [ -n "${C8SH_ENV:-}" ]; then
+        CAMUNDA_ENV=$C8SH_ENV
         CAMUNDA_ENV_FROM=--environment-name
     elif [ -n "${CAMUNDA_ENV:-}" ]; then
         CAMUNDA_ENV_FROM=CAMUNDA_ENV
@@ -388,12 +401,12 @@ camunda_load_profile() {
         _clp_list=$(camunda_list_envs | paste -s -d ' ' -)
         if [ -n "$CAMUNDA_CUSTOMER" ]; then
             camunda_die "no environment selected for customer '$CAMUNDA_CUSTOMER': use" \
-                "-e/--environment-name ENV, CAMUNDA_ENV or 'c8-profile use $CAMUNDA_CUSTOMER ENV'" \
+                "-e/--environment-name ENV, CAMUNDA_ENV or 'c8sh profile use $CAMUNDA_CUSTOMER ENV'" \
                 "(environments: ${_clp_list:-none})"
         fi
         _clp_customers=$(camunda_list_customers | paste -s -d ' ' -)
         camunda_die "no environment selected: use -e/--environment-name ENV or set CAMUNDA_ENV," \
-            "or choose a customer with 'c8-profile use CUSTOMER ENV'" \
+            "or choose a customer with 'c8sh profile use CUSTOMER ENV'" \
             "(customers: ${_clp_customers:-none}; environments without one: ${_clp_list:-none})"
     fi
 
@@ -401,7 +414,7 @@ camunda_load_profile() {
     if [ ! -f "$_clp_profile" ]; then
         if [ -z "$CAMUNDA_CUSTOMER" ] && [ -n "$(camunda_list_customers)" ]; then
             camunda_die "no profile for '$CAMUNDA_ENV' without a customer: choose one with" \
-                "-c/--customer, CAMUNDA_CUSTOMER or 'c8-profile use'" \
+                "-c/--customer, CAMUNDA_CUSTOMER or 'c8sh profile use'" \
                 "(customers: $(camunda_list_customers | paste -s -d ' ' -))"
         fi
         camunda_die "no profile for '$CAMUNDA_LABEL': $_clp_profile not found"
@@ -683,7 +696,7 @@ camunda_select_versions() {
         _csv_check=1
         shift
     fi
-    sort -n -u | awk -v prog="${0##*/}" -v sel="$*" -v check="$_csv_check" '
+    sort -n -u | awk -v prog="$_camunda_prog" -v sel="$*" -v check="$_csv_check" '
         function fail(msg) {
             printf "%s: error: %s\n", prog, msg >"/dev/stderr"
             failed = 1
@@ -796,7 +809,7 @@ camunda_format_ranges() {
 # --- process versions and their instances -------------------------------
 #
 # The building blocks of commands that act on process versions, such as
-# c8-cancel-process-instances:
+# c8sh instance cancel:
 #
 #   camunda_check_version_args "$@"      # before camunda_load_profile
 #   camunda_load_profile
@@ -807,7 +820,7 @@ camunda_format_ranges() {
 #
 # The versions come from the command line (PROCESS_ID VERSIONS..., with the
 # selectors of camunda_select_versions) or from stdin ("processDefinitionId
-# version" lines, as c8-list-process-versions prints).
+# version" lines, as c8sh version list prints).
 
 # camunda_check_version_args "$@"
 #
@@ -817,12 +830,12 @@ camunda_check_version_args() {
         camunda_usage_error "say which versions of '$1', e.g. 670, 27-100, 'oldest 10' or 'all but newest 5'"
     fi
     if [ $# -eq 0 ] && [ -t 0 ]; then
-        camunda_usage_error "no process versions: name them, or pipe them in (e.g. from c8-list-process-versions)"
+        camunda_usage_error "no process versions: name them, or pipe them in (e.g. from c8sh version list)"
     fi
     if [ $# -gt 1 ]; then
         shift
         if ! camunda_select_versions --check "$@" </dev/null; then
-            printf "Try '%s --help' for more information.\n" "${0##*/}" >&2
+            printf "Try '%s --help' for more information.\n" "$_camunda_prog" >&2
             exit 2
         fi
     fi
@@ -919,7 +932,7 @@ camunda_resolve_versions() {
                 "(deployed: $(camunda_format_ranges <"$_crv_deployed"))"
             return 1
         fi
-        printf '%s: selected %s version(s) of %s: %s\n' "${0##*/}" \
+        printf '%s: selected %s version(s) of %s: %s\n' "$_camunda_prog" \
             "$(wc -l <"$CAMUNDA_TMPDIR/selected" | tr -d ' ')" "$_crv_id" \
             "$(camunda_format_ranges <"$CAMUNDA_TMPDIR/selected")" >&2
         # Say which versions the selectors didn't consider, and why.
@@ -927,7 +940,7 @@ camunda_resolve_versions() {
             select(.processDefinitionId == $id and ((.state // "ACTIVE") as $s | $states | split(" ") | index($s) | not))
             | "\(.version) (\(.state | ascii_downcase))"' "$_crv_defs" | sort -n | paste -s -d ' ' -)
         if [ -n "$_crv_other" ]; then
-            printf '%s: not considered: %s\n' "${0##*/}" "$_crv_other" >&2
+            printf '%s: not considered: %s\n' "$_camunda_prog" "$_crv_other" >&2
         fi
         awk -v id="$_crv_id" '{ print id, $1 }' "$CAMUNDA_TMPDIR/selected" >"$_crv_req"
     fi

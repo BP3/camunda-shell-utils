@@ -9,7 +9,7 @@ other POSIX shells, against both Camunda SaaS and self-managed clusters.
 ## Requirements
 
 - `curl`
-- `jq`: needed by the `list-*` scripts, and used to pretty-print responses in a terminal
+- `jq`: needed by most commands, and used to pretty-print responses in a terminal
 
 ## Setup
 
@@ -18,12 +18,17 @@ from inside WSL, into your Linux home directory (e.g. `~/workspace`), rather
 than under `/mnt/c`. The scripts run faster there, and file permissions
 behave as on Linux.
 
-1. Put `bin/` on your `PATH`, or symlink the scripts you want into a directory
-   that's already on it:
+1. Put `bin/` on your `PATH`, or link `c8sh` into a directory that's
+   already on it:
 
    ```sh
-   ln -s "$PWD/bin/c8-topology" ~/bin/
+   ln -s "$PWD/bin/c8sh" ~/bin/
    ```
+
+   If you'd like to type `c8` instead, link it under that name too:
+   `ln -s "$PWD/bin/c8sh" ~/bin/c8`. Only do this if you don't use
+   Camunda's own CLI (`c8ctl`), which also installs a `c8` command:
+   whichever comes first on your `PATH` would win.
 
 2. Create a folder per customer in `~/.config/camunda/`, with one profile
    per environment, starting from the examples in [`profiles/`](profiles/):
@@ -42,8 +47,8 @@ behave as on Linux.
 3. Choose the customer and environment, and check that it works:
 
    ```sh
-   c8-profile use acme dev
-   c8-topology
+   c8sh profile use acme dev
+   c8sh cluster topology
    ```
 
 ## Customers, environments and profiles
@@ -66,23 +71,23 @@ folders and put the `<env>.env` files directly in `~/.config/camunda/`.
 
 ### Choosing which one to use
 
-Each script uses the first of these that's set:
+Each command uses the first of these that's set:
 
 1. **Options:** `-c`/`--customer NAME` and `-e`/`--environment-name ENV`
 2. **Shell variables:** `CAMUNDA_CUSTOMER` and `CAMUNDA_ENV`
-3. **The saved default:** set with `c8-profile use`
+3. **The saved default:** set with `c8sh profile use`
 
-If no environment is chosen, the script stops rather than guessing. A saved
+If no environment is chosen, the command stops rather than guessing. A saved
 environment only applies together with the saved customer: pointing one
 shell at another customer never carries a `prod` across.
 
-`c8-profile` shows and switches profiles:
+`c8sh profile` shows and switches profiles:
 
 ```sh
-c8-profile                  # what's in effect, where each choice came from, and its settings
-c8-profile list             # every customer/environment; '*' marks the one in effect
-c8-profile use acme dev     # save a default for every terminal (also: c8-profile use acme/dev)
-c8-profile clear            # forget the saved default
+c8sh profile                  # what's in effect, where each choice came from, and its settings
+c8sh profile list             # every customer/environment; '*' marks the one in effect
+c8sh profile use acme dev     # save a default for every terminal (also: c8sh profile use acme/dev)
+c8sh profile clear            # forget the saved default
 ```
 
 The saved default is shared by all your terminals. To work with a different
@@ -91,31 +96,31 @@ or use `-c`/`-e` for a single command:
 
 ```sh
 export CAMUNDA_CUSTOMER=globex CAMUNDA_ENV=uat   # this terminal only
-c8-list-processes -c acme -e prod                # this command only
+c8sh process list -c acme -e prod                # this command only
 ```
 
 In a pipeline, `-c`/`-e` and a prefix assignment such as
-`CAMUNDA_ENV=uat c8-list-processes | ...` apply only to the command they're
+`CAMUNDA_ENV=uat c8sh process list | ...` apply only to the command they're
 given to. Everything after the `|` uses whatever else is in effect, so
 either give each command its own options or `export` the variables:
 
 ```sh
-c8-list-processes -e uat | grep PATTERN | c8-list-process-versions -e uat
+c8sh process list -e uat | grep PATTERN | c8sh version list -e uat
 ```
 
 ### Showing the profile in your prompt
 
-`c8-profile prompt` prints the customer and environment in effect, e.g.
+`c8sh profile prompt` prints the customer and environment in effect, e.g.
 `acme/prod`, or nothing. Put it in your shell prompt, so you can always see
 where your next command will go:
 
 ```sh
 # zsh (~/.zshrc)
 setopt PROMPT_SUBST
-PROMPT='[$(c8-profile prompt)] '$PROMPT
+PROMPT='[$(c8sh profile prompt)] '$PROMPT
 
 # bash (~/.bashrc)
-PS1='[$(c8-profile prompt)] '$PS1
+PS1='[$(c8sh profile prompt)] '$PS1
 ```
 
 ### Settings
@@ -153,75 +158,94 @@ Use `CAMUNDA_CONFIG_DIR` to keep profiles somewhere else.
   passed to curl through a temporary config file that only you can read.
 - **File permissions:** you get a warning if a profile is readable by other
   users.
-- **Confirmation:** scripts that change anything ask you to type the
+- **Confirmation:** commands that change anything ask you to type the
   customer and environment (e.g. `acme/prod`) before going ahead, in every
   environment. `-y`/`--yes`
   skips the prompt for one command. Set `CAMUNDA_PROTECTED='false'` in a
   profile to stop the prompts for that environment. Without a terminal
-  (e.g. in CI), a script that would ask stops instead, unless given `-y`
+  (e.g. in CI), a command that would ask stops instead, unless given `-y`
   or run where `CAMUNDA_PROTECTED` is `'false'`.
 
-## Scripts
+## Commands
 
-Every script is named `c8-*` (for Camunda 8), so `c8-<Tab>` lists them all.
-Each takes short and long options; `--help` describes them.
+Everything is one command, `c8sh`, followed by what to act on and what to do:
+`c8sh NOUN VERB`, like `git` or `kubectl`. `c8sh --help` lists every command,
+`c8sh instance --help` a noun's verbs, and `c8sh instance cancel --help` (or
+`c8sh help instance cancel`) a command's options. `-c` and `-e` can come
+before the noun (`c8sh -e prod instance cancel ...`) or after the verb.
 
-| Script | Description |
+| Command | Description |
 |---|---|
-| `c8-profile` | Show, list and switch customer and environment profiles; `c8-profile prompt` for your shell prompt |
-| `c8-topology` | Show brokers, partitions and version, a quick way to check a profile |
-| `c8-list-processes` | List deployed processes as `"Process Name" processDefinitionId` |
-| `c8-list-process-versions` | List each version of the named or piped-in processes as `processDefinitionId version`; `--deleted` lists deleted versions instead |
-| `c8-cancel-process-instances` | Cancel the active instances of the named or piped-in process versions, as whole call trees: each root ends with every instance it called; `-n`/`--dry-run` lists them instead |
-| `c8-delete-process-instances` | Delete the history of finished (completed or terminated) instances of the named or piped-in process versions, as whole call trees: each root with every instance it called, and never a called instance whose parent stays (`--ignore-dependencies` turns this off); `-n`/`--dry-run` lists them instead |
-| `c8-delete-process-versions` | Delete the named or piped-in process versions; versions with active instances are skipped unless `--allow-active`, and `--delete-history` also removes their history (8.9+); `-n`/`--dry-run` lists them instead |
+| `c8sh profile` | Show, list and switch customer and environment profiles; `c8sh profile prompt` for your shell prompt |
+| `c8sh cluster topology` | Show brokers, partitions and version, a quick way to check a profile |
+| `c8sh process list` | List deployed processes as `"Process Name" processDefinitionId` |
+| `c8sh version list` | List each version of the named or piped-in processes as `processDefinitionId version`; `--deleted` lists deleted versions instead |
+| `c8sh instance cancel` | Cancel the active instances of the named or piped-in process versions, as whole call trees: each root ends with every instance it called; `-n`/`--dry-run` lists them instead |
+| `c8sh instance delete` | Delete the history of finished (completed or terminated) instances of the named or piped-in process versions, as whole call trees: each root with every instance it called, and never a called instance whose parent stays (`--ignore-dependencies` turns this off); `-n`/`--dry-run` lists them instead |
+| `c8sh version delete` | Delete the named or piped-in process versions; versions with active instances are skipped unless `--allow-active`, and `--delete-history` also removes their history (8.9+); `-n`/`--dry-run` lists them instead |
 
-The output is plain text, one item per line, so the scripts combine with each
-other and with standard tools:
+The output is plain text, one item per line, so the commands combine with
+each other and with standard tools:
 
 ```sh
-c8-list-processes | grep PATTERN | c8-list-process-versions
+c8sh process list | grep PATTERN | c8sh version list
 ```
 
 (with a customer and environment chosen, as in
 [Customers, environments and profiles](#customers-environments-and-profiles)).
 
-Scripts that change things have a `-n`/`--dry-run` option, which shows
+Commands that change things have a `-n`/`--dry-run` option, which shows
 what they would do without changing anything. Try that first:
 
 ```sh
-c8-list-process-versions PROCESS_ID | c8-cancel-process-instances --dry-run
+c8sh version list PROCESS_ID | c8sh instance cancel --dry-run
 ```
 
-When you name a process on the command line, the scripts that act on
+When you name a process on the command line, the commands that act on
 process versions let you pick them with ranges and phrases instead of
 listing numbers. `--help` has the full list:
 
 ```sh
-c8-cancel-process-instances --dry-run PROCESS_ID oldest 10
-c8-cancel-process-instances --dry-run PROCESS_ID 27-100
-c8-cancel-process-instances --dry-run PROCESS_ID older than 600
-c8-cancel-process-instances --dry-run PROCESS_ID all but newest 5
+c8sh instance cancel --dry-run PROCESS_ID oldest 10
+c8sh instance cancel --dry-run PROCESS_ID 27-100
+c8sh instance cancel --dry-run PROCESS_ID older than 600
+c8sh instance cancel --dry-run PROCESS_ID all but newest 5
 ```
 
 A typical clean-up of old versions runs in three steps, each tried with
 `--dry-run` first:
 
 ```sh
-c8-cancel-process-instances PROCESS_ID all but newest 5   # stop what's still running
-c8-delete-process-instances PROCESS_ID all but newest 5   # remove their history
-c8-delete-process-versions PROCESS_ID all but newest 5    # remove the versions
+c8sh instance cancel PROCESS_ID all but newest 5   # stop what's still running
+c8sh instance delete PROCESS_ID all but newest 5   # remove their history
+c8sh version delete PROCESS_ID all but newest 5    # remove the versions
 ```
 
 A deleted version is gone from the engine, but Camunda keeps its record,
-and its history, until that history is deleted too. The scripts leave
+and its history, until that history is deleted too. The commands leave
 deleted versions out (Camunda 8.9.14 and later say which they are).
-`c8-list-process-versions --deleted` lists them, e.g. to purge their
+`c8sh version list --deleted` lists them, e.g. to purge their
 history later:
 
 ```sh
-c8-list-process-versions --deleted PROCESS_ID | c8-delete-process-versions --delete-history
+c8sh version list --deleted PROCESS_ID | c8sh version delete --delete-history
 ```
+
+### The old command names
+
+Until recently, each command had its own name, such as `c8-list-processes`.
+Those names still work, printing a note of the new name, but they will be
+removed:
+
+| Old | New |
+|---|---|
+| `c8-profile` | `c8sh profile` |
+| `c8-topology` | `c8sh cluster topology` |
+| `c8-list-processes` | `c8sh process list` |
+| `c8-list-process-versions` | `c8sh version list` |
+| `c8-cancel-process-instances` | `c8sh instance cancel` |
+| `c8-delete-process-instances` | `c8sh instance delete` |
+| `c8-delete-process-versions` | `c8sh version delete` |
 
 ## Running the tests
 
@@ -232,12 +256,12 @@ TEST_SHELLS='dash' tests/run.sh       # one shell (separate several with ';')
 TEST_JOBS=2 tests/run.sh              # test files run 4 at a time by default
 ```
 
-The tests run each script in dash, `bash --posix`, `zsh --emulate sh` and
+The tests run each command in dash, `bash --posix`, `zsh --emulate sh` and
 BusyBox `sh`, whichever are installed (the runner says which it skips),
 against a mock Camunda API (`tests/mock_camunda.py`, which needs Python 3).
 They never touch a real cluster, never prompt, and use their own config,
 cache and `HOME`, so your profiles and tokens are safe. Tests check what
-each script printed and exited with, and what it sent to the mock.
+each command printed and exited with, and what it sent to the mock.
 
 GitHub runs the same suite on Ubuntu, in all four shells, for every pull
 request and every push to `main` ([`.github/workflows/tests.yml`](.github/workflows/tests.yml)).
