@@ -282,6 +282,7 @@ camunda_list_customers() {
 #
 # Lists the environments that have a profile, for CUSTOMER (default: the
 # selected one; none means the files directly in the config directory).
+# shellcheck disable=SC2120 # the argument is optional; c8-profile passes it
 camunda_list_envs() {
     _cle_dir=$_camunda_config_dir${1:+/$1}
     [ $# -gt 0 ] || _cle_dir=$_camunda_profile_dir
@@ -307,6 +308,8 @@ _camunda_check_name() {
 # (either may be empty), CAMUNDA_CUSTOMER_FROM and CAMUNDA_ENV_FROM (where
 # each came from, for c8-profile), CAMUNDA_LABEL ("customer/env", or just
 # "env" without a customer) and _camunda_profile_dir.
+# CAMUNDA_CUSTOMER_FROM and CAMUNDA_ENV_FROM are read by c8-profile.
+# shellcheck disable=SC2034
 camunda_select_profile() {
     _camunda_config_dir=${CAMUNDA_CONFIG_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/camunda}
     _camunda_state_file=$_camunda_config_dir/.current
@@ -465,7 +468,8 @@ camunda_load_profile() {
 _camunda_get_token() {
     _cgt_now=$(date +%s)
     if [ -f "$_camunda_token_file" ]; then
-        _cgt_exp= _cgt_tok=
+        _cgt_exp=''
+        _cgt_tok=''
         { read -r _cgt_exp && read -r _cgt_tok; } <"$_camunda_token_file" || :
         if [ -n "$_cgt_tok" ] && [ "${_cgt_exp:-0}" -gt "$_cgt_now" ] 2>/dev/null; then
             _camunda_token=$_cgt_tok

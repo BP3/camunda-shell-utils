@@ -1,4 +1,4 @@
-# shellcheck shell=sh
+# shellcheck shell=sh disable=SC2034 # fixture= and profiles= are read by tests/lib.sh
 # Version selectors (camunda_select_versions): no API needed.
 #
 # The versions deployed, for most tests: 337-346 and 667-671, like a

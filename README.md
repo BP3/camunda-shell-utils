@@ -1,5 +1,7 @@
     # Camunda Shell Utilities
 
+[![tests](https://github.com/BP3/camunda-shell-utils/actions/workflows/tests.yml/badge.svg)](https://github.com/BP3/camunda-shell-utils/actions/workflows/tests.yml)
+
 Shell scripts for the [Camunda 8 Orchestration API](https://docs.camunda.io/docs/apis-tools/orchestration-cluster-api-rest/orchestration-cluster-api-rest-overview/),
 written in plain POSIX `sh` with `curl`. They work in bash, zsh, dash and
 other POSIX shells, against both Camunda SaaS and self-managed clusters.
@@ -236,6 +238,10 @@ against a mock Camunda API (`tests/mock_camunda.py`, which needs Python 3).
 They never touch a real cluster, never prompt, and use their own config,
 cache and `HOME`, so your profiles and tokens are safe. Tests check what
 each script printed and exited with, and what it sent to the mock.
+
+GitHub runs the same suite on Ubuntu, in all four shells, for every pull
+request and every push to `main` ([`.github/workflows/tests.yml`](.github/workflows/tests.yml)).
+It also runs shellcheck, which must report no warnings.
 
 ## Contributing
 

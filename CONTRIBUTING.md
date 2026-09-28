@@ -20,7 +20,20 @@ To try commands against a real cluster, set up a profile as in the README,
 and use `--dry-run` for anything that changes things.
 
 Optional: install `dash` (and `busybox`) so the tests run in them too, and
-`shellcheck`.
+`shellcheck`, which CI runs at warning level:
+
+```sh
+shellcheck --shell=sh --severity=warning bin/* lib/camunda.sh tests/*.sh
+```
+
+If you have Docker, you can also run the suite as CI does, on Ubuntu with
+all four shells:
+
+```sh
+docker run --rm -v "$PWD":/src:ro ubuntu:24.04 sh -c 'apt-get update -q >/dev/null &&
+  apt-get install -y -q --no-install-recommends dash zsh busybox jq curl python3 >/dev/null &&
+  cp -R /src /work && cd /work && tests/run.sh'
+```
 
 ## How a command is put together
 
@@ -211,7 +224,8 @@ tests/run.sh
 ## Before opening a pull request
 
 - [ ] Branched from an up-to-date `main`
-- [ ] `tests/run.sh` passes in every shell it finds
+- [ ] `tests/run.sh` passes in every shell it finds, and so does the
+      `tests` check GitHub runs on the pull request (Ubuntu, all four shells)
 - [ ] New behaviour has tests, and a fix has the test that would have caught it
 - [ ] `--help`, the comment at the top of the script, and the README agree
       with what it does

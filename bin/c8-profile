@@ -67,6 +67,7 @@ shell_customer=${CAMUNDA_CUSTOMER:-}
 shell_env=${CAMUNDA_ENV:-}
 
 # Paths with ~ for home, to keep lines short.
+# shellcheck disable=SC2088 # the ~ is printed, not expanded
 tilde() {
     case $1 in
         "$HOME"/*) printf '~/%s\n' "${1#"$HOME"/}" ;;
