@@ -241,7 +241,7 @@ each script printed and exited with, and what it sent to the mock.
 
 GitHub runs the same suite on Ubuntu, in all four shells, for every pull
 request and every push to `main` ([`.github/workflows/tests.yml`](.github/workflows/tests.yml)).
-It also runs shellcheck, as advice for now.
+It also runs shellcheck, which must report no warnings.
 
 ## Contributing
 

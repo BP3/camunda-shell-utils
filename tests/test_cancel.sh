@@ -1,4 +1,4 @@
-# shellcheck shell=sh
+# shellcheck shell=sh disable=SC2034 # fixture= and profiles= are read by tests/lib.sh
 # c8-cancel-process-instances. In the fixture, the active instances are:
 #   1 (P_A v2, a root) called 71 (P_C), which called 81 (P_D)
 #   91 (P_B v1, a root) called 92 (P_A v2)

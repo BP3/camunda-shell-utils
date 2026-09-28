@@ -1,4 +1,4 @@
-# shellcheck shell=sh
+# shellcheck shell=sh disable=SC2034 # fixture= and profiles= are read by tests/lib.sh
 # c8-delete-process-instances. In the fixture, the finished instances are:
 #   11 (P_A v1, a root) called 41 (P_C), which called 51 (P_D)
 #   12 (P_A v2, a root)

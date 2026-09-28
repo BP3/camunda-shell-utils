@@ -1,4 +1,4 @@
-# shellcheck shell=sh
+# shellcheck shell=sh disable=SC2034 # fixture= and profiles= are read by tests/lib.sh
 # c8-delete-process-versions. In the fixture: P_A has versions 1, 2 (with
 # active instances) and 3 (deleted); P_B has 1 (active instances) and 2
 # (draining); P_Y has 1, and 2 (deleted); P_F 1 is refused (403); P_X 1 has

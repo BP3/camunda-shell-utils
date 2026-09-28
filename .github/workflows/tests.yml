@@ -4,6 +4,7 @@
 # Runs the test suite on every pull request and on every push to main, in
 # all four shells: dash, bash --posix, zsh --emulate sh and BusyBox sh.
 # Ubuntu also exercises the GNU tools (and mawk), where macOS uses BSD ones.
+# A second job runs shellcheck.
 
 name: tests
 
@@ -40,12 +41,10 @@ jobs:
           TEST_JOBS: 4
 
   shellcheck:
-    # Advisory for now: the scripts haven't been through shellcheck yet, so
-    # its findings are reported without failing the build. Make it blocking
-    # (remove continue-on-error) once they're clean.
-    name: shellcheck (advisory)
+    # Warnings and errors fail the build; info and style notes don't (the
+    # code uses single-quoted jq programs and tr ranges on purpose).
+    name: shellcheck
     runs-on: ubuntu-latest
-    continue-on-error: true
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4

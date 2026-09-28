@@ -1,4 +1,4 @@
-# shellcheck shell=sh
+# shellcheck shell=sh disable=SC2034 # fixture= and profiles= are read by tests/lib.sh
 # c8-list-processes and c8-list-process-versions: output, order, paging,
 # piping, and version states.
 

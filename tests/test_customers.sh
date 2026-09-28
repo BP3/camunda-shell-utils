@@ -1,4 +1,4 @@
-# shellcheck shell=sh
+# shellcheck shell=sh disable=SC2034 # fixture= and profiles= are read by tests/lib.sh
 # Customer profiles and c8-profile: acme (dev, prod) and globex (dev).
 
 fixture=basic

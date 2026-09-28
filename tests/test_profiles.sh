@@ -1,4 +1,4 @@
-# shellcheck shell=sh
+# shellcheck shell=sh disable=SC2034 # fixture= and profiles= are read by tests/lib.sh
 # Options, profile files and tokens, in the flat layout (no customers).
 
 fixture=basic
