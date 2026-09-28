@@ -164,7 +164,7 @@ Each takes short and long options; `--help` describes them.
 | `c8-profile` | Show, list and switch customer and environment profiles; `c8-profile prompt` for your shell prompt |
 | `c8-topology` | Show brokers, partitions and version, a quick way to check a profile |
 | `c8-list-processes` | List deployed processes as `"Process Name" processDefinitionId` |
-| `c8-list-process-versions` | List each version of the named or piped-in processes as `processDefinitionId version` |
+| `c8-list-process-versions` | List each version of the named or piped-in processes as `processDefinitionId version`; `--deleted` lists deleted versions instead |
 | `c8-cancel-process-instances` | Cancel the active instances of the named or piped-in process versions, as whole call trees: each root ends with every instance it called; `-n`/`--dry-run` lists them instead |
 | `c8-delete-process-instances` | Delete the history of finished (completed or terminated) instances of the named or piped-in process versions, as whole call trees: each root with every instance it called, and never a called instance whose parent stays (`--ignore-dependencies` turns this off); `-n`/`--dry-run` lists them instead |
 | `c8-delete-process-versions` | Delete the named or piped-in process versions; versions with active instances are skipped unless `--allow-active`, and `--delete-history` also removes their history (8.9+); `-n`/`--dry-run` lists them instead |
@@ -204,6 +204,16 @@ A typical clean-up of old versions runs in three steps, each tried with
 c8-cancel-process-instances PROCESS_ID all but newest 5   # stop what's still running
 c8-delete-process-instances PROCESS_ID all but newest 5   # remove their history
 c8-delete-process-versions PROCESS_ID all but newest 5    # remove the versions
+```
+
+A deleted version is gone from the engine, but Camunda keeps its record,
+and its history, until that history is deleted too. The scripts leave
+deleted versions out (Camunda 8.9.14 and later say which they are).
+`c8-list-process-versions --deleted` lists them, e.g. to purge their
+history later:
+
+```sh
+c8-list-process-versions --deleted PROCESS_ID | c8-delete-process-versions --delete-history
 ```
 
 ## Writing a script

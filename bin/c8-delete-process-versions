@@ -37,6 +37,12 @@ with c8-cancel-process-instances, or use --allow-active. Finished instances
 (history) are left alone unless --delete-history is given; to delete them
 following the call-tree rules, use c8-delete-process-instances first.
 
+Versions already being deleted (draining) are skipped, and so are versions
+already deleted, except with --delete-history: then only their history is
+deleted. To purge the history of every deleted version of a process:
+
+  c8-list-process-versions --deleted PROCESS_ID | ${0##*/} --delete-history
+
 VERSIONS picks from the process's deployed versions. Combine any of:
 
   670 671                     exact versions
@@ -101,6 +107,13 @@ done
 
 camunda_check_version_args "$@"
 camunda_load_profile
+# Versions already being deleted are skipped. Deleted ones are skipped too,
+# except with --delete-history: asking again purges their history.
+if [ -n "$delete_history" ]; then
+    _camunda_version_states="ACTIVE DELETED"
+else
+    _camunda_version_states=ACTIVE
+fi
 tmp=$CAMUNDA_TMPDIR
 status=0
 
@@ -136,8 +149,9 @@ fi
 
 # Warn when a process loses its latest version (new instances would start
 # on an older one) or every version (it's no longer deployed at all).
-jq -n -r --rawfile delete "$tmp/delete" --slurpfile defs "$tmp/definitions" '
-    ($delete | split("\n") | map(select(. != "") | split(" ") | {id: .[0], v: (.[1] | tonumber)})
+jq -n -r --rawfile delete "$tmp/delete" --slurpfile all "$tmp/definitions" '
+    ($all | map(select((.state // "ACTIVE") == "ACTIVE"))) as $defs
+    | ($delete | split("\n") | map(select(. != "") | split(" ") | {id: .[0], v: (.[1] | tonumber)})
         | group_by(.id) | map({key: .[0].id, value: map(.v)}) | from_entries) as $gone
     | $defs | group_by(.processDefinitionId)[]
     | .[0].processDefinitionId as $id
@@ -154,6 +168,12 @@ jq -n -r --rawfile delete "$tmp/delete" --slurpfile defs "$tmp/definitions" '
 total=$(wc -l <"$tmp/delete" | tr -d ' ')
 processes=$(awk '{ print $1 }' "$tmp/delete" | sort -u | wc -l | tr -d ' ')
 summary="$total version(s) of $processes process(es)"
+purge=$(jq -r --rawfile delete "$tmp/delete" '
+    ($delete | split("\n") | map(select(. != "") | split(" ")[2] | {key: ., value: true}) | from_entries) as $d
+    | select($d[.processDefinitionKey] and .state == "DELETED") | .processDefinitionKey' "$tmp/definitions" | wc -l | tr -d ' ')
+if [ "$purge" -gt 0 ]; then
+    summary="$summary ($purge already deleted: only their history goes)"
+fi
 if [ -n "$delete_history" ]; then
     summary="$summary, with all their history"
     camunda_warn "--delete-history: all finished instances of these versions go too, whether or not" \
