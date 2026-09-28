@@ -54,6 +54,8 @@
 # reach curl through a private config file instead.
 
 CAMUNDA_SAAS_OAUTH_URL='https://login.cloud.camunda.io/oauth/token'
+# A carriage return: files edited on Windows end their lines with one.
+_camunda_cr=$(printf '\r')
 CAMUNDA_SAAS_TOKEN_AUDIENCE='zeebe.camunda.io'
 
 # --- messages -----------------------------------------------------------
@@ -172,6 +174,7 @@ _camunda_read_profile() {
     while IFS= read -r _crp_line || [ -n "$_crp_line" ]; do
         _crp_n=$((_crp_n + 1))
         _crp_where="$_crp_file:$_crp_n"
+        _crp_line=${_crp_line%"$_camunda_cr"}
 
         # Strip leading whitespace and an optional 'export'.
         _crp_line=${_crp_line#"${_crp_line%%[![:space:]]*}"}
@@ -312,6 +315,7 @@ camunda_select_profile() {
     _csp_saved_env=
     if [ -f "$_camunda_state_file" ]; then
         while IFS='=' read -r _csp_key _csp_val; do
+            _csp_val=${_csp_val%"$_camunda_cr"}
             case $_csp_key in
                 customer) _csp_saved_customer=$_csp_val ;;
                 env) _csp_saved_env=$_csp_val ;;

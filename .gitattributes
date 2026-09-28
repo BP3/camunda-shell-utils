@@ -1,0 +1,7 @@
+# Shell scripts must keep Unix line endings on every platform: a CRLF
+# checkout (Git for Windows' default) turns '#!/bin/sh' into '#!/bin/sh\r',
+# which WSL and Linux can't run ("required file not found").
+* text=auto eol=lf
+
+# Scripts without an extension.
+bin/* text eol=lf
