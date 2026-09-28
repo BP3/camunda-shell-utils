@@ -11,6 +11,7 @@ test_list_processes() {
     # still deployed; P_Z (every version deleted) left out.
     assert_stdout '"Alpha" P_A
 "Bad key" P_X
+"Bad key, active" P_W
 "bravo" P_B
 "Called \"C\"" P_C
 "Called D" P_D

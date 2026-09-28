@@ -194,14 +194,9 @@ fi
 
 # --- delete ------------------------------------------------------------------
 
-# Every key goes into a URL path, so each must be exactly a number. Check
-# them all before asking, or sending anything.
-if awk '$3 !~ /^[0-9]+$/ { print; bad = 1 } END { exit !bad }' "$tmp/delete" >"$tmp/bad"; then
-    while read -r id v key _; do
-        camunda_warn "bad processDefinitionKey '$key' for $id $v"
-    done <"$tmp/bad"
-    camunda_die "refusing to continue; nothing deleted"
-fi
+# Every key goes into a URL path: check them all before asking, or sending
+# anything.
+camunda_check_keys "$tmp/delete"
 
 camunda_confirm "delete $summary"
 

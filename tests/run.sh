@@ -7,6 +7,7 @@
 #   tests/run.sh                    every test file, every shell
 #   tests/run.sh tests/test_x.sh    just these files
 #   TEST_SHELLS='dash' tests/run.sh just these shells (separate with ';')
+#   TEST_JOBS=2 tests/run.sh        how many test files run at once (default 4)
 #
 # Needs python3 for the mock API. Never touches a real cluster: every test
 # runs with its own config, cache and HOME, pointed at the mock.
@@ -39,17 +40,27 @@ if [ $# -eq 0 ]; then
     set -- "$ROOT"/tests/test_*.sh
 fi
 
-passed=0
-failed=0
-failures=
+# Each (shell, file) pair is a job, in its own process so its settings stay
+# its own; TEST_JOBS of them run at once. Results are shown in order after.
+RUN_TMP=$(mktemp -d "${TMPDIR:-/tmp}/c8-run.XXXXXX")
+trap 'rm -rf "$RUN_TMP"' EXIT
+# Default 4: each job starts hundreds of short processes (sh, curl, jq), so
+# more jobs than that mostly compete for the CPU (measured on an 8-core Mac).
+jobs=${TEST_JOBS:-4}
+case $jobs in '' | *[!0-9]* | 0) echo "run.sh: TEST_JOBS must be a positive number" >&2; exit 2 ;; esac
+
+n=0
+running=0
 IFS_SAVED=$IFS
 IFS=';'
 for shell in $TEST_SHELLS; do
     IFS=$IFS_SAVED
-    printf '== %s\n' "$shell"
     for file in "$@"; do
-        # Each file runs in its own process, so its settings stay its own.
-        results=$(TEST_SHELL=$shell sh -c '
+        n=$((n + 1))
+        id=$(printf '%04d' "$n")
+        printf '%s\n' "$shell" >"$RUN_TMP/$id.shell"
+        printf '%s\n' "${file##*/}" >"$RUN_TMP/$id.name"
+        TEST_SHELL=$shell sh -c '
             . "$ROOT/tests/lib.sh"
             . "$1"
             setup_file
@@ -57,25 +68,42 @@ for shell in $TEST_SHELLS; do
                 setup_test
                 "$t"
                 if [ -n "$_failed" ]; then echo "FAIL $t"; else echo "PASS $t"; fi
-            done' sh "$file" 2>&1)
-        name=${file##*/}
-        printf '%s\n' "$results" | while IFS= read -r line; do
-            case $line in
-                'PASS '*) ;;
-                'FAIL '*) printf '  FAIL %s: %s\n' "$name" "${line#FAIL }" ;;
-                *) printf '%s\n' "$line" ;;
-            esac
-        done
-        p=$(printf '%s\n' "$results" | grep -c '^PASS ' || :)
-        f=$(printf '%s\n' "$results" | grep -c '^FAIL ' || :)
-        printf '  %-36s %3d passed %3d failed\n' "$name" "$p" "$f"
-        passed=$((passed + p))
-        failed=$((failed + f))
-        [ "$f" -eq 0 ] || failures="$failures $shell:$name"
+            done' sh "$file" >"$RUN_TMP/$id.out" 2>&1 &
+        running=$((running + 1))
+        if [ "$running" -ge "$jobs" ]; then
+            wait
+            running=0
+        fi
     done
     IFS=';'
 done
 IFS=$IFS_SAVED
+wait
+
+passed=0
+failed=0
+current=
+for out in "$RUN_TMP"/*.out; do
+    id=${out%.out}
+    shell=$(cat "$id.shell")
+    name=$(cat "$id.name")
+    if [ "$shell" != "$current" ]; then
+        printf '== %s\n' "$shell"
+        current=$shell
+    fi
+    while IFS= read -r line; do
+        case $line in
+            'PASS '*) ;;
+            'FAIL '*) printf '  FAIL %s: %s\n' "$name" "${line#FAIL }" ;;
+            *) printf '%s\n' "$line" ;;
+        esac
+    done <"$out"
+    p=$(grep -c '^PASS ' "$out" || :)
+    f=$(grep -c '^FAIL ' "$out" || :)
+    printf '  %-36s %3d passed %3d failed\n' "$name" "$p" "$f"
+    passed=$((passed + p))
+    failed=$((failed + f))
+done
 
 printf '\n%d passed, %d failed\n' "$passed" "$failed"
 [ "$failed" -eq 0 ]
