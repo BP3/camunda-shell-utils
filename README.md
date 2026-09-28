@@ -221,6 +221,21 @@ history later:
 c8-list-process-versions --deleted PROCESS_ID | c8-delete-process-versions --delete-history
 ```
 
+## Running the tests
+
+```sh
+tests/run.sh                          # every test, in every POSIX shell installed
+tests/run.sh tests/test_profiles.sh   # one file
+TEST_SHELLS='dash' tests/run.sh       # one shell (separate several with ';')
+```
+
+The tests run each script in dash, `bash --posix`, `zsh --emulate sh` and
+BusyBox `sh`, whichever are installed (the runner says which it skips),
+against a mock Camunda API (`tests/mock_camunda.py`, which needs Python 3).
+They never touch a real cluster, never prompt, and use their own config,
+cache and `HOME`, so your profiles and tokens are safe. Tests check what
+each script printed and exited with, and what it sent to the mock.
+
 ## Writing a script
 
 Scripts source [`lib/camunda.sh`](lib/camunda.sh), parse their options,
