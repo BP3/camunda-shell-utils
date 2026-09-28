@@ -11,6 +11,11 @@ other POSIX shells, against both Camunda SaaS and self-managed clusters.
 
 ## Setup
 
+On Windows, use WSL (Windows Subsystem for Linux), and clone the repository
+from inside WSL, into your Linux home directory (e.g. `~/workspace`), rather
+than under `/mnt/c`. The scripts run faster there, and file permissions
+behave as on Linux.
+
 1. Put `bin/` on your `PATH`, or symlink the scripts you want into a directory
    that's already on it:
 
