@@ -42,10 +42,15 @@ of each line, so the output of c8-list-processes can be piped in:
 
 where PATTERN selects the processes you want by name or id.
 
-Processes are listed in the order given. Exits with status 1 if any
-process has no deployed versions.
+Processes are listed in the order given. Versions being deleted (draining
+while their last instances finish) are included; deleted versions, whose
+history is still kept, are only listed with --deleted. Exits with status 1
+if any process has no versions to list.
 
 Options:
+  --deleted                   list only the versions that have been deleted
+                              (e.g. to pipe into c8-delete-process-versions
+                              --delete-history, which purges their history)
   -c, --customer NAME         customer profile to use (default: \$CAMUNDA_CUSTOMER,
                               or the one chosen with c8-profile use)
   -e, --environment-name ENV  environment to use (default: \$CAMUNDA_ENV, or
@@ -54,8 +59,10 @@ Options:
 EOF
 }
 
+states="ACTIVE DRAINING"
 while [ $# -gt 0 ]; do
     case $1 in
+        --deleted) states=DELETED; shift ;;
         --) shift; break ;;
         -?*) camunda_common_option "$@"; shift "$_camunda_shift" ;;
         *) break ;;
@@ -83,8 +90,13 @@ split -l 100 "$ids" "$CAMUNDA_TMPDIR/batch."
 for batch in "$CAMUNDA_TMPDIR"/batch.*; do
     [ -f "$batch" ] || continue
     query=$(jq -R -s -c '{filter: {processDefinitionId: {"$in": split("\n") | map(select(. != ""))}}}' "$batch")
-    camunda_search /process-definitions/search "$query" >>"$versions"
+    camunda_search /process-definitions/search "$query" >>"$versions.all"
 done
+# Only the states asked for; clusters before 8.9.14 report none (ACTIVE).
+if [ -s "$versions.all" ]; then
+    jq -c --arg states "$states" \
+        'select((.state // "ACTIVE") as $s | $states | split(" ") | index($s))' "$versions.all" >"$versions"
+fi
 
 # Print in the order given, versions ascending; then report the ids that
 # have no versions at all.
@@ -101,7 +113,11 @@ missing=$(jq -n -r --rawfile ids "$ids" --slurpfile items "$versions" '
 ')
 if [ -n "$missing" ]; then
     printf '%s\n' "$missing" | while IFS= read -r id; do
-        camunda_warn "no deployed versions of '$id' in '$CAMUNDA_LABEL'"
+        if [ "$states" = DELETED ]; then
+            camunda_warn "no deleted versions of '$id' in '$CAMUNDA_LABEL'"
+        else
+            camunda_warn "no deployed versions of '$id' in '$CAMUNDA_LABEL'"
+        fi
     done
     exit 1
 fi

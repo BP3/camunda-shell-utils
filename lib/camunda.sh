@@ -822,14 +822,22 @@ camunda_check_version_args() {
 
 # camunda_resolve_versions "$@"
 #
+# Only versions in the states listed in _camunda_version_states (default
+# "ACTIVE DRAINING") count as deployed. Clusters before 8.9.14 don't report
+# a state; their versions count as ACTIVE. DELETED versions are gone from
+# the engine but kept in search results with their history.
+#
 # Works out which deployed versions are meant and writes them to the file
 # named by CAMUNDA_TARGETS, as "processDefinitionId version
 # processDefinitionKey" lines in input order. The key pins down exactly one
-# version. Returns 1 if some requested versions aren't deployed (after
-# warning about them); exits on malformed input.
+# version. Also leaves every deployed version of the processes involved in
+# $CAMUNDA_TMPDIR/definitions (one JSON object per line). Returns 1 if some
+# requested versions aren't deployed (after warning about them); exits on
+# malformed input.
 camunda_resolve_versions() {
     camunda_require_command jq
     CAMUNDA_TARGETS=$CAMUNDA_TMPDIR/targets
+    _crv_states=${_camunda_version_states:-ACTIVE DRAINING}
     _crv_status=0
     _crv_id=
     _crv_req=$CAMUNDA_TMPDIR/requested
@@ -869,18 +877,35 @@ camunda_resolve_versions() {
         camunda_search /process-definitions/search "$_crv_query" >>"$_crv_defs" || exit 1
     done
     rm -f "$_crv_ids".*
+    # The versions in a state this command works on.
+    _crv_usable=$CAMUNDA_TMPDIR/usable
+    jq -c --arg states "$_crv_states" \
+        'select((.state // "ACTIVE") as $s | $states | split(" ") | index($s))' "$_crv_defs" >"$_crv_usable"
 
     # Named on the command line: apply the selectors to what's deployed.
     if [ -n "$_crv_id" ]; then
         _crv_deployed=$CAMUNDA_TMPDIR/deployed
-        jq -r --arg id "$_crv_id" 'select(.processDefinitionId == $id) | .version' "$_crv_defs" |
+        jq -r --arg id "$_crv_id" 'select(.processDefinitionId == $id) | .version' "$_crv_usable" |
             sort -n >"$_crv_deployed"
         if [ ! -s "$_crv_deployed" ]; then
             camunda_warn "no deployed versions of '$_crv_id' in '$CAMUNDA_LABEL'"
             return 1
         fi
-        camunda_select_versions "$@" <"$_crv_deployed" >"$CAMUNDA_TMPDIR/selected" || _crv_status=$?
-        [ "$_crv_status" -le 1 ] || exit "$_crv_status"
+        camunda_select_versions "$@" <"$_crv_deployed" >"$CAMUNDA_TMPDIR/selected" \
+            2>"$CAMUNDA_TMPDIR/select.err" || _crv_status=$?
+        if [ "$_crv_status" -gt 1 ]; then
+            cat "$CAMUNDA_TMPDIR/select.err" >&2
+            exit "$_crv_status"
+        fi
+        # Exact versions it couldn't find: say which were deleted.
+        sed -n 's/.*: warning: not deployed: //p' "$CAMUNDA_TMPDIR/select.err" | tr ' ' '\n' | grep . |
+            jq -R -r --arg id "$_crv_id" --slurpfile defs "$_crv_defs" '
+                (tonumber) as $v | ($defs | map(select(.processDefinitionId == $id and .version == $v))[0]) as $d
+                | if $d == null then "not deployed: \($id) \($v)"
+                  elif ($d.state // "ACTIVE") == "DELETED" then "already deleted: \($id) \($v)"
+                  elif $d.state == "DRAINING" then "already being deleted (draining): \($id) \($v)"
+                  else "\(($d.state // "ACTIVE") | ascii_downcase), skipped: \($id) \($v)" end' |
+            while IFS= read -r _crv_line; do camunda_warn "$_crv_line"; done
         if [ ! -s "$CAMUNDA_TMPDIR/selected" ]; then
             camunda_warn "no deployed versions of '$_crv_id' match '$*'" \
                 "(deployed: $(camunda_format_ranges <"$_crv_deployed"))"
@@ -889,21 +914,35 @@ camunda_resolve_versions() {
         printf '%s: selected %s version(s) of %s: %s\n' "${0##*/}" \
             "$(wc -l <"$CAMUNDA_TMPDIR/selected" | tr -d ' ')" "$_crv_id" \
             "$(camunda_format_ranges <"$CAMUNDA_TMPDIR/selected")" >&2
+        # Say which versions the selectors didn't consider, and why.
+        _crv_other=$(jq -r --arg id "$_crv_id" --arg states "$_crv_states" '
+            select(.processDefinitionId == $id and ((.state // "ACTIVE") as $s | $states | split(" ") | index($s) | not))
+            | "\(.version) (\(.state | ascii_downcase))"' "$_crv_defs" | sort -n | paste -s -d ' ' -)
+        if [ -n "$_crv_other" ]; then
+            printf '%s: not considered: %s\n' "${0##*/}" "$_crv_other" >&2
+        fi
         awk -v id="$_crv_id" '{ print id, $1 }' "$CAMUNDA_TMPDIR/selected" >"$_crv_req"
     fi
 
     # "id version key" for each requested version that exists.
-    jq -n -r --rawfile requested "$_crv_req" --slurpfile defs "$_crv_defs" '
+    jq -n -r --rawfile requested "$_crv_req" --slurpfile defs "$_crv_usable" '
         ($defs | map({key: "\(.processDefinitionId) \(.version)", value: .processDefinitionKey})
             | from_entries) as $keys
         | $requested | split("\n")[] | select(. != "") | select($keys[.]) | "\(.) \($keys[.])"
     ' >"$CAMUNDA_TARGETS"
-    awk -v targets="$CAMUNDA_TARGETS" '
-        BEGIN { while ((getline line <targets) > 0) { split(line, f, " "); found[f[1] " " f[2]] = 1 } }
-        !found[$0]' "$_crv_req" |
-        while IFS= read -r _crv_line; do
-            camunda_warn "not deployed in '$CAMUNDA_LABEL', skipped: $_crv_line"
-        done
+    # The rest: say why each was skipped.
+    jq -n -r --rawfile requested "$_crv_req" --rawfile targets "$CAMUNDA_TARGETS" --slurpfile defs "$_crv_defs" '
+        ($defs | map({key: "\(.processDefinitionId) \(.version)", value: (.state // "ACTIVE")}) | from_entries) as $state
+        | ($targets | split("\n") | map(select(. != "") | split(" ")[0:2] | join(" ") | {key: ., value: true})
+            | from_entries) as $done
+        | $requested | split("\n")[] | select(. != "" and ($done[.] | not))
+        | if $state[.] == "DELETED" then "already deleted, skipped: \(.)"
+          elif $state[.] == "DRAINING" then "already being deleted (draining), skipped: \(.)"
+          elif $state[.] then "\($state[.] | ascii_downcase), skipped: \(.)"
+          else "not deployed, skipped: \(.)" end
+    ' | while IFS= read -r _crv_line; do
+        camunda_warn "$_crv_line (in '$CAMUNDA_LABEL')"
+    done
     if [ "$(wc -l <"$CAMUNDA_TARGETS")" -lt "$(wc -l <"$_crv_req")" ]; then
         _crv_status=1
     fi

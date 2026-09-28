@@ -108,6 +108,8 @@ done
 
 camunda_check_version_args "$@"
 camunda_load_profile
+# A deleted version's history is still there to delete.
+_camunda_version_states="ACTIVE DRAINING DELETED"
 tmp=$CAMUNDA_TMPDIR
 status=0
 
