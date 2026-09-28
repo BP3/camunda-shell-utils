@@ -237,44 +237,10 @@ They never touch a real cluster, never prompt, and use their own config,
 cache and `HOME`, so your profiles and tokens are safe. Tests check what
 each script printed and exited with, and what it sent to the mock.
 
-## Writing a script
+## Contributing
 
-Scripts source [`lib/camunda.sh`](lib/camunda.sh), parse their options,
-load a profile, and call the API. [`bin/c8-topology`](bin/c8-topology)
-is the minimal template. Start each new file with the same license header:
-
-```sh
-#!/bin/sh
-# SPDX-License-Identifier: MIT
-# Copyright (c) 2026 BP3 Global Inc.
-```
-
-Options are parsed with a plain `while`/`case` loop, since `getopts` has no
-long options. The script's own options come first. `camunda_common_option`
-handles the shared ones (`-c`/`--customer`, `-e`/`--environment-name`, `-h`/`--help`, which calls
-the script's `usage` function) and rejects unknown options:
-
-```sh
-while [ $# -gt 0 ]; do
-    case $1 in
-        -n | --dry-run) dry_run=1; shift ;;
-        --) shift; break ;;
-        -?*) camunda_common_option "$@"; shift "$_camunda_shift" ;;
-        *) break ;;
-    esac
-done
-```
-
-Then:
-
-```sh
-camunda_load_profile                          # uses -c/-e, the shell variables, or the saved default
-camunda_api GET /topology                     # path is relative to /v2
-
-camunda_api POST /process-instances/search --data @query.json
-camunda_search /process-definitions/search '{"filter":{}}' # all pages, one item per line
-camunda_confirm "cancel 12 process instances" # before any change
-```
+See [CONTRIBUTING.md](CONTRIBUTING.md) for how the commands are put
+together, adding a command (with a worked example), and writing its tests.
 
 ## License
 
