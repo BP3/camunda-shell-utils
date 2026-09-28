@@ -199,7 +199,7 @@ _camunda_read_profile() {
         # Only CAMUNDA_* keys are ours; anything else (ZEEBE_*, ...) is
         # left alone for the tools that use it.
         case $_crp_key in
-            CAMUNDA_ENV | CAMUNDA_CUSTOMER | CAMUNDA_CONFIG_DIR | CAMUNDA_TMPDIR)
+            CAMUNDA_ENV | CAMUNDA_CUSTOMER | CAMUNDA_CONFIG_DIR | CAMUNDA_TMPDIR | CAMUNDA_TTY)
                 # These choose which profile to read, or belong to the run.
                 camunda_warn "$_crp_where: ignoring $_crp_key (set it in the shell instead)"
                 continue
@@ -1114,13 +1114,23 @@ camunda_is_protected() {
 # the customer and environment ("acme/prod", or just "prod" without a
 # customer), unless CAMUNDA_ASSUME_YES=1 (set it from a -y/--yes option).
 # Not tied to HTTP methods: the API also uses POST for read-only searches.
+#
+# The answer is read from the terminal, not stdin (which may be a pipe of
+# versions): CAMUNDA_TTY, default /dev/tty. The tests point it at a file of
+# answers, or at nothing, so they never prompt the person running them.
 camunda_confirm() {
     camunda_is_protected || return 0
     [ "${CAMUNDA_ASSUME_YES:-}" = 1 ] && return 0
-    (exec </dev/tty) 2>/dev/null ||
+    _cc_tty=${CAMUNDA_TTY:-/dev/tty}
+    (exec <"$_cc_tty") 2>/dev/null ||
         camunda_die "refusing to $1 in '$CAMUNDA_LABEL' without confirmation (no terminal; use -y/--yes)"
-    printf "About to %s in '%s'. Type '%s' to continue: " "$1" "$CAMUNDA_LABEL" "$CAMUNDA_LABEL" >/dev/tty
+    _cc_prompt=$(printf "About to %s in '%s'. Type '%s' to continue: " "$1" "$CAMUNDA_LABEL" "$CAMUNDA_LABEL")
+    if [ "$_cc_tty" = /dev/tty ]; then
+        printf '%s' "$_cc_prompt" >/dev/tty
+    else
+        printf '%s\n' "$_cc_prompt" >&2
+    fi
     _cc_answer=
-    read -r _cc_answer </dev/tty || :
+    read -r _cc_answer <"$_cc_tty" || :
     [ "$_cc_answer" = "$CAMUNDA_LABEL" ] || camunda_die "aborted"
 }
