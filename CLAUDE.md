@@ -15,6 +15,8 @@ command does.
 - `tests/`: `run.sh` (runner), `lib.sh` (helpers), `mock_camunda.py` (mock
   API), `fixtures/` (data and profiles), `test_*.sh`
 - `profiles/*.example`: templates for `~/.config/camunda/`
+- `CONTRIBUTING.md`: how a command is put together, the library by task, and
+  a worked example of adding a command and its tests
 
 ## Working here
 
