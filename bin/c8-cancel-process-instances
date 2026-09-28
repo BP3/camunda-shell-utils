@@ -145,6 +145,8 @@ if [ "$roots" -eq 0 ]; then
     exit "$status"
 fi
 
+awk '$4 > 0' "$tmp/counts" >"$tmp/to-cancel"
+camunda_check_keys "$tmp/to-cancel"
 camunda_confirm "cancel $total instance(s) ($summary)"
 camunda_run_batches /process-instances/cancellation '{}' <"$tmp/counts" || status=1
 printf '%s: started cancelling %s root instance(s) in %s; the instances they called end with them\n' \

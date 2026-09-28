@@ -5,7 +5,7 @@
     "instances are numbered by role, see _about on each.",
     "P_A: versions 1, 2, and 3 (deleted). P_B: 1, and 2 (draining).",
     "P_C and P_D are only ever called. P_Y's latest version is deleted; P_Z's only one is.",
-    "P_X has a malformed key, to check it never reaches a URL."
+    "P_X and P_W have malformed keys, to check they never reach a request; P_W has an active instance."
   ],
   "definitions": [
     {"processDefinitionId": "P_A", "version": 1, "processDefinitionKey": "101", "name": "Alpha"},
@@ -17,6 +17,7 @@
     {"processDefinitionId": "P_D", "version": 1, "processDefinitionKey": "501", "name": "Called D"},
     {"processDefinitionId": "P_F", "version": 1, "processDefinitionKey": "301", "name": "Forbidden"},
     {"processDefinitionId": "P_X", "version": 1, "processDefinitionKey": "7/../../x", "name": "Bad key"},
+    {"processDefinitionId": "P_W", "version": 1, "processDefinitionKey": "88/../x", "name": "Bad key, active"},
     {"processDefinitionId": "P_Y", "version": 1, "processDefinitionKey": "903", "name": "Yankee"},
     {"processDefinitionId": "P_Y", "version": 2, "processDefinitionKey": "902", "name": "Yankee", "state": "DELETED"},
     {"processDefinitionId": "P_Z", "version": 1, "processDefinitionKey": "901", "name": "Zulu", "state": "DELETED"}
@@ -27,6 +28,7 @@
     {"processInstanceKey": "81", "processDefinitionKey": "501", "state": "ACTIVE", "parentProcessInstanceKey": "71", "_about": "called by 71"},
     {"processInstanceKey": "91", "processDefinitionKey": "201", "state": "ACTIVE", "_about": "active root of P_B v1"},
     {"processInstanceKey": "92", "processDefinitionKey": "102", "state": "ACTIVE", "parentProcessInstanceKey": "91", "_about": "P_A v2, called by P_B's root"},
+    {"processInstanceKey": "31", "processDefinitionKey": "88/../x", "state": "ACTIVE", "_about": "active root of P_W, whose key is malformed"},
 
     {"processInstanceKey": "11", "processDefinitionKey": "101", "state": "COMPLETED", "_about": "finished root of P_A v1"},
     {"processInstanceKey": "41", "processDefinitionKey": "401", "state": "COMPLETED", "parentProcessInstanceKey": "11", "_about": "called by 11"},

@@ -1065,6 +1065,21 @@ camunda_plan_trees() {
         | "\($id) \($v) \(.processDefinitionId) \(.processDefinitionVersion) \(.processInstanceKey)"'
 }
 
+# camunda_check_keys FILE
+#
+# Fails, naming each culprit, unless every line of FILE ("processDefinitionId
+# version key ...") has a key that is exactly a number. Check before
+# confirming or sending anything: a batch filter without its key would match
+# every instance in the cluster, and a key goes into some URL paths.
+camunda_check_keys() {
+    if awk '$3 !~ /^[0-9]+$/ { print; bad = 1 } END { exit !bad }' "$1" >"$CAMUNDA_TMPDIR/bad-keys"; then
+        while read -r _cck_id _cck_v _cck_key _; do
+            camunda_warn "bad processDefinitionKey '$_cck_key' for $_cck_id $_cck_v"
+        done <"$CAMUNDA_TMPDIR/bad-keys"
+        camunda_die "refusing to continue; nothing changed"
+    fi
+}
+
 # camunda_run_batches PATH FILTER
 #
 # Reads "processDefinitionId version key count" lines (camunda_count_instances)
@@ -1072,17 +1087,15 @@ camunda_plan_trees() {
 # operation: POST PATH with the filter {processDefinitionKey: key} plus
 # FILTER's fields. Prints "processDefinitionId version batchOperationKey"
 # for each one started, and sets CAMUNDA_BATCHED to the total count of
-# instances they cover. Returns 1 if any failed to start.
+# instances they cover. Returns 1 if any failed to start. Every key is
+# checked before the first request.
 camunda_run_batches() {
     CAMUNDA_BATCHED=0
     _crb_status=0
+    _crb_todo=$CAMUNDA_TMPDIR/batches
+    awk '$4 > 0' >"$_crb_todo"
+    camunda_check_keys "$_crb_todo"
     while read -r _crb_id _crb_v _crb_key _crb_n; do
-        [ "$_crb_n" -gt 0 ] || continue
-        # The filter must pin a single version: without a key, a batch
-        # operation would match every instance in the cluster.
-        case $_crb_key in
-            '' | *[!0-9]*) camunda_die "refusing to continue: bad processDefinitionKey '$_crb_key' for $_crb_id $_crb_v" ;;
-        esac
         jq -n -c --arg key "$_crb_key" --argjson extra "$2" '{filter: ($extra + {processDefinitionKey: $key})}' \
             >"$CAMUNDA_TMPDIR/batch.json"
         if camunda_api POST "$1" --data @"$CAMUNDA_TMPDIR/batch.json" >"$CAMUNDA_TMPDIR/batch.out"; then
@@ -1092,7 +1105,7 @@ camunda_run_batches() {
             camunda_warn "could not start the batch operation for $_crb_id $_crb_v"
             _crb_status=1
         fi
-    done
+    done <"$_crb_todo"
     return "$_crb_status"
 }
 

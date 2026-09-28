@@ -1,4 +1,4 @@
-# Camunda Shell Utilities
+    # Camunda Shell Utilities
 
 Shell scripts for the [Camunda 8 Orchestration API](https://docs.camunda.io/docs/apis-tools/orchestration-cluster-api-rest/orchestration-cluster-api-rest-overview/),
 written in plain POSIX `sh` with `curl`. They work in bash, zsh, dash and
@@ -227,6 +227,7 @@ c8-list-process-versions --deleted PROCESS_ID | c8-delete-process-versions --del
 tests/run.sh                          # every test, in every POSIX shell installed
 tests/run.sh tests/test_profiles.sh   # one file
 TEST_SHELLS='dash' tests/run.sh       # one shell (separate several with ';')
+TEST_JOBS=2 tests/run.sh              # test files run 4 at a time by default
 ```
 
 The tests run each script in dash, `bash --posix`, `zsh --emulate sh` and
