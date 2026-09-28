@@ -211,7 +211,8 @@ tests/run.sh
 ## Before opening a pull request
 
 - [ ] Branched from an up-to-date `main`
-- [ ] `tests/run.sh` passes in every shell it finds
+- [ ] `tests/run.sh` passes in every shell it finds, and so does the
+      `tests` check GitHub runs on the pull request (Ubuntu, all four shells)
 - [ ] New behaviour has tests, and a fix has the test that would have caught it
 - [ ] `--help`, the comment at the top of the script, and the README agree
       with what it does

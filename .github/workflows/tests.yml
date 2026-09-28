@@ -1,0 +1,57 @@
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 BP3 Global Inc.
+#
+# Runs the test suite on every pull request and on every push to main, in
+# all four shells: dash, bash --posix, zsh --emulate sh and BusyBox sh.
+# Ubuntu also exercises the GNU tools (and mawk), where macOS uses BSD ones.
+
+name: tests
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  tests:
+    name: tests (ubuntu, 4 shells)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install the shells and tools
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q --no-install-recommends dash zsh busybox jq curl python3
+
+      - name: Show versions
+        run: |
+          dpkg-query -W dash bash zsh busybox jq curl mawk python3 || true
+          echo "awk is $(readlink -f "$(command -v awk)")"
+
+      - name: Run the tests
+        run: tests/run.sh
+        env:
+          TEST_JOBS: 4
+
+  shellcheck:
+    # Advisory for now: the scripts haven't been through shellcheck yet, so
+    # its findings are reported without failing the build. Make it blocking
+    # (remove continue-on-error) once they're clean.
+    name: shellcheck (advisory)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run shellcheck
+        run: |
+          shellcheck --version
+          shellcheck --shell=sh --severity=warning \
+            bin/* lib/camunda.sh tests/run.sh tests/lib.sh tests/test_*.sh

@@ -24,7 +24,8 @@ command does.
   git pull --ff-only` first) and change things through pull requests; never
   commit to `main`.
 - **Run `tests/run.sh` before every PR**; it must pass in every shell it
-  finds. A change to behaviour comes with a test, and a bug fix with the
+  finds. GitHub Actions runs it again on Ubuntu in all four shells
+  (`.github/workflows/tests.yml`); don't merge a PR until it's green. A change to behaviour comes with a test, and a bug fix with the
   test that would have caught it.
 - **Don't run anything that changes a real cluster** (cancel, delete) unless
   the user explicitly asks for that run. Against real clusters use
