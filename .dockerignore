@@ -1,0 +1,8 @@
+# Only bin/, libexec/, lib/, tests/ and LICENSE go into the image.
+.git
+.github
+.claude
+.idea
+profiles
+*.md
+renovate.json

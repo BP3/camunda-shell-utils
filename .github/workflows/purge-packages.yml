@@ -1,0 +1,46 @@
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 BP3 Global Inc.
+#
+# Weekly: delete old branch images from ghcr.io/bp3/c8sh, keeping 'main',
+# 'latest', every release, and the 15 newest branch images.
+
+name: Purge old images
+
+on:
+  schedule:
+    - cron: '0 3 * * 0' # Sundays, 03:00 UTC
+  workflow_dispatch:
+    inputs:
+      dry-run:
+        description: 'Only log what would be deleted'
+        type: boolean
+        default: true
+
+# The clean-up isn't safe to run twice at once against the same package.
+concurrency:
+  group: purge-packages
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  purge:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Purge old versions of the image
+        uses: dataaxiom/ghcr-cleanup-action@v1
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          owner: bp3
+          packages: c8sh
+          # 'main' is what release.yml publishes: never delete it.
+          use-regex: true
+          exclude-tags: '^(main|latest|v?[0-9]+\.[0-9]+\.[0-9]+.*)$'
+          keep-n-tagged: 15
+          delete-untagged: true
+          delete-ghost-images: true
+          validate: true
+          # A scheduled run deletes; a manual one only previews, by default.
+          dry-run: ${{ inputs.dry-run == true }}

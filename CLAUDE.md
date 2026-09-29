@@ -22,6 +22,15 @@ command does.
 - `tests/`: `run.sh` (runner), `lib.sh` (helpers), `mock_camunda.py` (mock
   API), `fixtures/` (data and profiles), `test_*.sh`
 - `profiles/*.example`: templates for `~/.config/camunda/`
+- `Dockerfile`: the image (Alpine: BusyBox `sh` and tools, plus `curl`
+  and `jq`), and a `test` stage that runs the whole suite inside it
+- `.github/workflows/`: `tests.yml` (the suite on Ubuntu in four shells,
+  shellcheck); `branch-build.yml` and `main-build.yml` build the image
+  (through `build-image.yml`: tests in the image, push to
+  `ghcr.io/bp3/c8sh:<branch slug>`, smoke test); `release.yml` re-tags
+  `:main` for a published release and pushes it to Docker Hub as
+  `bp3global/c8sh:<tag>` and `:latest`; `purge-packages.yml` clears old
+  branch images weekly. The same scheme as BP3's camunda-lint
 - `CONTRIBUTING.md`: how a command is put together, the library by task, and
   a worked example of adding a command and its tests
 - `.claude/skills/`: `add-c8sh-command` and `test-c8sh-command`, the steps

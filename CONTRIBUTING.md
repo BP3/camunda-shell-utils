@@ -28,8 +28,14 @@ Optional: install `dash` (and `busybox`) so the tests run in them too, and
 shellcheck --shell=sh --severity=warning bin/* libexec/c8sh/* lib/camunda.sh tests/*.sh
 ```
 
-If you have Docker, you can also run the suite as CI does, on Ubuntu with
-all four shells:
+If you have Docker, you can also run the suite inside the image, as CI does
+before publishing it (BusyBox `sh` with Alpine's own tools):
+
+```sh
+docker build --target test .
+```
+
+or on Ubuntu with all four shells:
 
 ```sh
 docker run --rm -v "$PWD":/src:ro ubuntu:24.04 sh -c 'apt-get update -q >/dev/null &&
@@ -232,6 +238,15 @@ Run just your file while working, then everything:
 TEST_SHELLS=dash tests/run.sh tests/test_instance_count.sh
 tests/run.sh
 ```
+
+## Releasing
+
+Every pull request builds an image, `ghcr.io/bp3/c8sh:<branch>`, and every
+merge to `main` builds `ghcr.io/bp3/c8sh:main`, each tested before it's
+pushed. To release, publish a GitHub release with a version tag (e.g.
+`v0.1.0`): `.github/workflows/release.yml` re-tags the `main` image with it
+and pushes it to Docker Hub as `bp3global/c8sh:v0.1.0` and `:latest`.
+Nothing is rebuilt, so what's released is exactly what was tested on `main`.
 
 ## Before opening a pull request
 

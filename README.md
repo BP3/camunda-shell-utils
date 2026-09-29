@@ -51,6 +51,40 @@ behave as on Linux.
    c8sh cluster topology
    ```
 
+## Running it with Docker
+
+Instead of cloning the repository, you can run the published image. It has
+`c8sh` and everything it needs (Alpine Linux, `curl`, `jq`). Mount your
+profiles at `/config`:
+
+```sh
+docker run --rm -it -v ~/.config/camunda:/config bp3global/c8sh process list
+```
+
+To type `c8sh ...` as usual, add a function to `~/.zshrc` or `~/.bashrc`:
+
+```sh
+c8sh() {
+    tty=
+    [ -t 0 ] && [ -t 1 ] && tty=-t
+    docker run --rm -i $tty --user "$(id -u):$(id -g)" \
+        -v "$HOME/.config/camunda:/config" bp3global/c8sh "$@"
+}
+```
+
+It then works as the installed command does, pipes included:
+`c8sh version list PROCESS_ID | c8sh instance cancel --dry-run`.
+
+- **Confirming a change needs a terminal.** A command at the end of a pipe
+  has none, so it refuses; check with `--dry-run` first, then add `-y`.
+- **The token isn't kept** between runs, so each command gets a new one
+  (about a third of a second).
+- For `c8sh profile prompt` in your shell prompt, a local install is much
+  faster than starting a container for every prompt.
+
+Images: `bp3global/c8sh:latest` and `bp3global/c8sh:VERSION` on Docker Hub,
+for each release; `ghcr.io/bp3/c8sh:main` is the newest build of `main`.
+
 ## Customers, environments and profiles
 
 Profiles live in `~/.config/camunda/`, with a folder per customer and a file

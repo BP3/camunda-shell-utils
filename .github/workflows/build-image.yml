@@ -1,0 +1,153 @@
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 BP3 Global Inc.
+#
+# Builds the c8sh image, tagged with the branch name, and pushes it to the
+# GitHub Container Registry; then pulls it back and smoke-tests it. Called by
+# branch-build.yml (pull requests) and main-build.yml (the 'main' image, which
+# release.yml re-tags for each release).
+
+name: Build image
+
+on:
+  workflow_call:
+    inputs:
+      image-name:
+        required: true
+        type: string
+      package-name:
+        required: true
+        type: string
+      org-name:
+        required: true
+        type: string
+      branch-name:
+        required: true
+        type: string
+
+jobs:
+  build-image:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    outputs:
+      tag: ${{ steps.tag.outputs.tag }}
+    steps:
+      # GitHub has no branch-name slug (GitLab's CI_COMMIT_REF_SLUG), so make
+      # one: a Docker tag allows only [A-Za-z0-9._-], up to 128 characters.
+      # Git branch names can't be empty or start with '-' or '.', so the
+      # result is always a valid tag.
+      - name: Derive the image tag from the branch name
+        id: tag
+        env:
+          RAW_BRANCH: ${{ inputs.branch-name }}
+        run: |
+          tag=$(printf '%s' "$RAW_BRANCH" | tr -c 'A-Za-z0-9._-' '-' | cut -c1-128)
+          echo "Branch '$RAW_BRANCH' -> image tag '$tag'"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "IMAGE_TAG=$tag" >> "$GITHUB_ENV"
+
+      - uses: actions/checkout@v7
+
+      # The whole test suite, run by BusyBox sh with Alpine's own tools, in the
+      # image itself (the Dockerfile's 'test' stage). Nothing is pushed unless
+      # it passes.
+      - name: Run the tests in the image
+        run: docker build --target test --progress=plain .
+
+      - name: Build the image
+        env:
+          IMAGE: ${{ inputs.image-name }}
+        run: docker build -t "$IMAGE:$IMAGE_TAG" .
+
+      - name: Log in to the GitHub Container Registry
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # A branch keeps one image: delete the version its tag points at now.
+      - name: Delete the branch's previous image
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ORG: ${{ inputs.org-name }}
+          PACKAGE: ${{ inputs.package-name }}
+        run: |
+          versions=$(mktemp)
+          status=$(curl -sS -w '%{http_code}' -o "$versions" \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            "https://api.github.com/orgs/$ORG/packages/container/$PACKAGE/versions?per_page=100")
+          # 404: the package doesn't exist yet (the first build).
+          if [ "$status" = 404 ]; then exit 0; fi
+          id=$(jq -r --arg tag "$IMAGE_TAG" \
+            '.[] | select(.metadata.container.tags | index($tag)) | .id' "$versions")
+          if [ -n "$id" ]; then
+            echo "Deleting version $id, tagged $IMAGE_TAG"
+            curl -sS -f -X DELETE \
+              -H "Accept: application/vnd.github+json" \
+              -H "X-GitHub-Api-Version: 2022-11-28" \
+              -H "Authorization: Bearer $GH_TOKEN" \
+              "https://api.github.com/orgs/$ORG/packages/container/$PACKAGE/versions/$id"
+          fi
+
+      - name: Push the image
+        env:
+          IMAGE: ${{ inputs.image-name }}
+        run: docker push "$IMAGE:$IMAGE_TAG"
+
+  test-image:
+    runs-on: ubuntu-latest
+    needs: build-image
+    timeout-minutes: 10
+    env:
+      IMAGE: ${{ inputs.image-name }}
+      IMAGE_TAG: ${{ needs.build-image.outputs.tag }}
+    steps:
+      - name: Log in to the GitHub Container Registry
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Pull the image
+        run: docker pull "$IMAGE:$IMAGE_TAG"
+
+      # What the build can't show: that the pushed image runs as people will
+      # run it, with profiles mounted at /config, as any user.
+      - name: Smoke test
+        run: |
+          set -eu
+          img="$IMAGE:$IMAGE_TAG"
+
+          # (grep >/dev/null rather than grep -q, which stops reading at the
+          # first match and leaves docker writing to a closed pipe.)
+          echo "== the tools c8sh needs are there"
+          docker run --rm --entrypoint sh "$img" -c 'command -v curl && command -v jq && jq --version'
+
+          echo "== help lists the commands"
+          docker run --rm "$img" --help | grep '  instance cancel ' >/dev/null
+
+          echo "== profiles mounted at /config are found"
+          config=$(mktemp -d)
+          mkdir "$config/acme"
+          printf "CAMUNDA_CLUSTER_REGION='fra-1'\nCAMUNDA_CLUSTER_ID='x'\nCAMUNDA_CLIENT_ID='x'\nCAMUNDA_CLIENT_SECRET='x'\n" \
+            >"$config/acme/dev.env"
+          # Readable by the container's user, whoever that is (hence the
+          # warning about permissions, which is expected here).
+          chmod -R a+rX "$config"
+          docker run --rm -v "$config:/config:ro" "$img" profile list | grep -x '  acme/dev' >/dev/null
+          docker run --rm -v "$config:/config:ro" "$img" -c acme -e dev profile show |
+            grep 'https://fra-1.zeebe.camunda.io/x' >/dev/null
+
+          echo "== as another user, as with --user on a Linux host"
+          docker run --rm --user 12345 -v "$config:/config:ro" "$img" profile list | grep -x '  acme/dev' >/dev/null
+
+          echo "== mistakes are reported, with the usual exit status"
+          set +e
+          docker run --rm "$img" instance nope 2>/dev/null
+          [ $? -eq 2 ] || { echo "expected status 2"; exit 1; }
+          docker run --rm -v "$config:/config:ro" "$img" -c acme -e nosuch process list 2>/dev/null
+          [ $? -eq 1 ] || { echo "expected status 1"; exit 1; }
+          echo "smoke test passed"

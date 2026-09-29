@@ -1,0 +1,25 @@
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 BP3 Global Inc.
+#
+# For every merge to main: build ghcr.io/bp3/c8sh:main. release.yml re-tags
+# this image for each release, so it's what gets published.
+
+name: Build main image
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  image:
+    permissions:
+      contents: read
+      packages: write
+    uses: ./.github/workflows/build-image.yml
+    with:
+      image-name: ghcr.io/bp3/c8sh
+      package-name: c8sh
+      org-name: bp3
+      branch-name: ${{ github.ref_name }}
+    secrets: inherit
