@@ -1,6 +1,6 @@
 # CLAUDE.md
 
-Shell tools (`c8-*`) for the Camunda 8 Orchestration API (REST `/v2`), in
+Shell tools (`c8sh`) for the Camunda 8 Orchestration API (REST `/v2`), in
 plain POSIX `sh` with `curl` and `jq`. They target Camunda SaaS and
 self-managed clusters, several customers each with several environments,
 and they run on macOS, Linux and Windows (WSL). See the README for what each
