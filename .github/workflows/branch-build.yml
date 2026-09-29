@@ -1,0 +1,26 @@
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 BP3 Global Inc.
+#
+# For every pull request: build the image, tagged with the branch name (as a
+# slug), push it to ghcr.io/bp3/c8sh, and smoke-test it.
+
+name: Build branch image
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  image:
+    # Named explicitly, so the push and the old-image clean-up work even where
+    # a pull request's GITHUB_TOKEN would otherwise be read-only.
+    permissions:
+      contents: read
+      packages: write
+    uses: ./.github/workflows/build-image.yml
+    with:
+      image-name: ghcr.io/bp3/c8sh
+      package-name: c8sh
+      org-name: bp3
+      branch-name: ${{ github.head_ref || github.ref_name }}
+    secrets: inherit
