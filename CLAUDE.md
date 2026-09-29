@@ -24,6 +24,8 @@ command does.
 - `profiles/*.example`: templates for `~/.config/camunda/`
 - `CONTRIBUTING.md`: how a command is put together, the library by task, and
   a worked example of adding a command and its tests
+- `.claude/skills/`: `add-c8sh-command` and `test-c8sh-command`, the steps
+  for adding a command and for testing one
 
 ## Working here
 
@@ -144,8 +146,9 @@ command does.
   a time (`TEST_JOBS`), against `tests/mock_camunda.py`. Each test gets
   fresh profiles, cache, `HOME` and request log, and no terminal.
 - A test file sets `fixture=` (and `profiles=flat` or `customers`) and
-  defines `test_*` functions using `run`, `run_with`, `c8`, `lib`, `answer`
-  and the `assert_*` helpers documented in `tests/lib.sh`. `assert_sent`
+  defines `test_*` functions using `run`, `run_with`, `c8sh`, `lib`, `answer`
+  and the `assert_*` helpers documented in `tests/lib.sh` (`c8` runs an old
+  command name). `assert_sent`
   checks what reached the mock, as a grep on its JSON request log.
 - The mock never changes its data; tests check what was sent. Add data to
   `tests/fixtures/basic.json` (or a new fixture), keeping the comment that

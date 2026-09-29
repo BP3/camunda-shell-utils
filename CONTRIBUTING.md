@@ -1,7 +1,9 @@
 # Contributing
 
 Thanks for helping. This guide covers how the commands are put together and
-how to add one. The rules the code relies on, shell pitfalls we've hit, and
+how to add one. If you use Claude Code, the `add-c8sh-command` and
+`test-c8sh-command` skills (in `.claude/skills/`) take it through the same
+steps. The rules the code relies on, shell pitfalls we've hit, and
 Camunda API behaviour that isn't obvious are in [`CLAUDE.md`](CLAUDE.md):
 read that too. It's written for Claude Code, but it's the project's rule book.
 

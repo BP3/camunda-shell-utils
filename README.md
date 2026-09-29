@@ -1,4 +1,4 @@
-    # Camunda Shell Utilities
+# Camunda Shell Utilities
 
 [![tests](https://github.com/BP3/camunda-shell-utils/actions/workflows/tests.yml/badge.svg)](https://github.com/BP3/camunda-shell-utils/actions/workflows/tests.yml)
 
