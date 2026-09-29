@@ -1,6 +1,6 @@
 # CLAUDE.md
 
-Shell tools (`c8-*`) for the Camunda 8 Orchestration API (REST `/v2`), in
+Shell tools (`c8sh`) for the Camunda 8 Orchestration API (REST `/v2`), in
 plain POSIX `sh` with `curl` and `jq`. They target Camunda SaaS and
 self-managed clusters, several customers each with several environments,
 and they run on macOS, Linux and Windows (WSL). See the README for what each
@@ -8,7 +8,14 @@ command does.
 
 ## Layout
 
-- `bin/c8-*`: one command per file; `bin/c8-topology` is the minimal template
+- `bin/c8sh`: the one command. It dispatches `c8sh NOUN VERB` to
+  `libexec/c8sh/NOUN-VERB` (or `libexec/c8sh/NOUN`, for a noun that handles
+  its own verbs, like `profile`), and builds `c8sh --help` from each file's
+  header line
+- `libexec/c8sh/*`: one file per command; `cluster-topology` is the minimal
+  template
+- `bin/c8-*`: the old command names, kept for now as wrappers that point to
+  `c8sh`; they'll be removed
 - `lib/camunda.sh`: everything shared: profiles, auth, API calls, paging,
   version selectors, call trees, batches, confirmation. Each function is
   documented where it's defined
@@ -42,7 +49,15 @@ command does.
 - **Every script and library file** starts with the shebang (or
   `# shellcheck shell=sh`), then `# SPDX-License-Identifier: MIT` and
   `# Copyright (c) 2026 BP3 Global Inc.`
-- **Command names** are `c8-<verb>-<thing>`.
+- **Commands** are `c8sh NOUN VERB` (`c8sh instance cancel`), in
+  `libexec/c8sh/NOUN-VERB`. The header comment's first line must be
+  `# c8sh NOUN VERB - what it does`: `c8sh --help` shows it. Name the command
+  in usage and messages with `$_camunda_prog`, never `$0`. Don't name
+  anything `c8`: Camunda's own CLI installs a `c8` command (an optional `c8`
+  symlink to `c8sh` is documented, with that warning).
+- `c8sh` passes `-c`/`-e` given before the noun as `C8SH_CUSTOMER`/`C8SH_ENV`,
+  the name to show as `C8SH_PROG`, and runs the command in `C8SH_SHELL`
+  (default `/bin/sh`; the tests set it to the shell under test).
 - **Options come before operands.** Parse them with a `while`/`case` loop
   (not `getopts`: no long options). Script options come first, then
   `camunda_common_option` handles `-c/--customer`, `-e/--environment-name`,

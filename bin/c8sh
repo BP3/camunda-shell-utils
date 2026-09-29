@@ -1,0 +1,163 @@
+#!/bin/sh
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 BP3 Global Inc.
+#
+# c8sh - Camunda 8 shell utilities
+#
+#   c8sh [-c CUSTOMER] [-e ENV] NOUN VERB [OPTION]... [ARG]...
+#
+# Runs libexec/c8sh/NOUN-VERB, or libexec/c8sh/NOUN for a noun that handles
+# its own verbs (profile). -c and -e before the noun apply to the command;
+# the command's own -c and -e, after the verb, win over them.
+
+set -eu
+
+# Find the commands, following symlinks (e.g. a 'c8' link in ~/bin).
+self=$0
+while [ -L "$self" ]; do
+    link=$(readlink "$self")
+    case $link in
+        /*) self=$link ;;
+        *) self=$(dirname "$self")/$link ;;
+    esac
+done
+commands=$(cd "$(dirname "$self")/.." && pwd)/libexec/c8sh
+me=${0##*/}
+
+# The first line of a command's header comment: "c8sh NOUN VERB - what it does".
+describe() {
+    sed -n 's/^# c8sh [a-z-]*\( [a-z-]*\)\{0,1\} - //p' "$1" | head -n 1
+}
+
+# nouns : the nouns, one per line.
+nouns() {
+    for f in "$commands"/*; do
+        [ -f "$f" ] || continue
+        f=${f##*/}
+        printf '%s\n' "${f%%-*}"
+    done | sort -u
+}
+
+# verbs NOUN : "verb<TAB>description" lines. A noun that handles its own
+# verbs lists them in its header as "# c8sh NOUN VERB - what it does" lines
+# ("." as the verb if it lists none).
+verbs() {
+    if [ -f "$commands/$1" ]; then
+        _listed=$(sed -n "s/^# c8sh $1 \([a-z-]*\) - /\1$(printf '\t')/p" "$commands/$1")
+        if [ -n "$_listed" ]; then
+            printf '%s\n' "$_listed"
+        else
+            printf '.\t%s\n' "$(describe "$commands/$1")"
+        fi
+    fi
+    for f in "$commands/$1"-*; do
+        [ -f "$f" ] || continue
+        printf '%s\t%s\n' "${f##*/"$1"-}" "$(describe "$f")"
+    done
+}
+
+usage() {
+    cat <<EOF
+Usage: $me [OPTION]... NOUN VERB [OPTION]... [ARG]...
+
+Camunda 8 shell utilities.
+
+Commands:
+EOF
+    for noun in $(nouns); do
+        verbs "$noun" | while IFS="$(printf '\t')" read -r verb what; do
+            [ "$verb" != . ] || verb=
+            printf '  %-22s %s\n' "$noun${verb:+ $verb}" "$what"
+        done
+    done
+    cat <<EOF
+
+Options (also accepted after the verb, where they win):
+  -c, --customer NAME         customer profile to use
+  -e, --environment-name ENV  environment to use
+  -h, --help                  show this help and exit
+
+Run '$me NOUN VERB --help' for a command's own options, or
+'$me help NOUN [VERB]'.
+EOF
+}
+
+usage_error() {
+    printf '%s: error: %s\n' "$me" "$1" >&2
+    printf "Try '%s --help' for more information.\n" "$me" >&2
+    exit 2
+}
+
+noun_help() {
+    printf 'Usage: %s %s VERB [OPTION]... [ARG]...\n\nVerbs:\n' "$me" "$1"
+    verbs "$1" | while IFS="$(printf '\t')" read -r verb what; do
+        printf '  %-12s %s\n' "$verb" "$what"
+    done
+    printf "\nRun '%s %s VERB --help' for a verb's options.\n" "$me" "$1"
+}
+
+# --- options before the noun --------------------------------------------
+
+set_option() {
+    [ -n "$2" ] || usage_error "option '$1' needs a name"
+    case $1 in
+        -c | --customer) C8SH_CUSTOMER=$2 && export C8SH_CUSTOMER ;;
+        *) C8SH_ENV=$2 && export C8SH_ENV ;;
+    esac
+}
+
+while [ $# -gt 0 ]; do
+    case $1 in
+        -c | --customer | -e | --environment-name)
+            [ $# -ge 2 ] || usage_error "option '$1' needs a name"
+            set_option "$1" "$2"
+            shift 2
+            ;;
+        --customer=* | --environment-name=*) set_option "${1%%=*}" "${1#*=}"; shift ;;
+        -c?*) set_option -c "${1#-c}"; shift ;;
+        -e?*) set_option -e "${1#-e}"; shift ;;
+        -h | --help) usage; exit 0 ;;
+        --) shift; break ;;
+        -?*) usage_error "unknown option '$1'" ;;
+        *) break ;;
+    esac
+done
+
+# --- the noun and verb -----------------------------------------------------
+
+[ $# -gt 0 ] || { usage >&2; exit 2; }
+
+# 'c8sh help NOUN [VERB]' is 'c8sh NOUN [VERB] --help'.
+if [ "$1" = help ]; then
+    shift
+    [ $# -gt 0 ] || { usage; exit 0; }
+    set -- "$@" --help
+fi
+
+noun=$1
+shift
+case $noun in
+    *[!a-z-]* | -*) usage_error "unknown command '$noun'" ;;
+esac
+[ -n "$(verbs "$noun")" ] || usage_error "unknown command '$noun'"
+
+if [ -f "$commands/$noun" ]; then
+    command=$commands/$noun
+    C8SH_PROG="$me $noun"
+else
+    case ${1:-} in
+        '') noun_help "$noun" >&2; exit 2 ;;
+        -h | --help) noun_help "$noun"; exit 0 ;;
+        *[!a-z-]* | -*) usage_error "unknown command '$noun $1'" ;;
+    esac
+    [ -f "$commands/$noun-$1" ] || usage_error "unknown command '$noun $1'"
+    command=$commands/$noun-$1
+    C8SH_PROG="$me $noun $1"
+    shift
+fi
+export C8SH_PROG
+
+# C8SH_SHELL: the shell to run the command in (the tests set it to the shell
+# under test); by default the command's own #!/bin/sh.
+# shellcheck disable=SC2086 # C8SH_SHELL may be "bash --posix"
+exec ${C8SH_SHELL:-/bin/sh} "$command" "$@"

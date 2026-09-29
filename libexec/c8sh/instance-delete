@@ -1,0 +1,252 @@
+#!/bin/sh
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 BP3 Global Inc.
+#
+# c8sh instance delete - delete the finished instances of process versions
+#
+# Deletes the history of COMPLETED and TERMINATED instances, as whole call
+# trees: a root instance goes with every instance it called (whatever their
+# process), and a called instance is never deleted while its parent stays;
+# one whose parent is already gone counts as a root.
+# The versions themselves stay deployed. Takes "processDefinitionId version"
+# pairs, on the command line or piped in from c8sh version list, and
+# starts a deletion batch operation per version, naming the exact instances:
+#
+#   c8sh version list Process_X | c8sh instance delete --dry-run
+
+set -eu
+
+# Find lib/ from libexec/c8sh/, following symlinks.
+self=$0
+while [ -L "$self" ]; do
+    link=$(readlink "$self")
+    case $link in
+        /*) self=$link ;;
+        *) self=$(dirname "$self")/$link ;;
+    esac
+done
+. "$(cd "$(dirname "$self")/../.." && pwd)/lib/camunda.sh"
+
+usage() {
+    cat <<EOF
+Usage: $_camunda_prog [OPTION]... [PROCESS_ID VERSIONS...]
+
+Delete the finished (completed or terminated) instances of the given process
+versions: their history is removed, and the versions stay deployed. Active
+instances are never touched; cancel them first with
+c8sh instance cancel if you need to.
+
+Instances are deleted as whole call trees:
+  - a root instance is deleted with every instance it called, at any depth,
+    whatever their process or version
+  - an instance called from another process is deleted only with its
+    parent: if the parent stays, it is skipped; if the parent is already
+    gone (e.g. removed by history retention), it counts as a root
+--ignore-dependencies turns this off: only the chosen versions' finished
+instances are deleted, called or not, and nothing they called.
+
+VERSIONS picks from the process's deployed versions. Combine any of:
+
+  670 671                     exact versions
+  27-100, 27 to 100           an inclusive range
+  first-600, 600-last         from the oldest, or to the newest, deployed
+                              version (600- also works)
+  older than 50, before 50    versions below 50; also '<50', '<=50'
+  newer than 50, after 50     versions above 50; also '>50', '>=50'
+  oldest 10                   the 10 oldest deployed versions
+  newest 5, latest 5          the 5 newest; 'latest' alone means 1
+  all                         every deployed version
+  ... except ..., ... but ... leave out what follows
+
+For example: 'all but newest 5', 'older than 600 except 400-410'. Quote
+anything with < or > so the shell doesn't treat it as a redirection. The
+versions selected are listed on stderr.
+
+With no arguments, read "processDefinitionId version" pairs from stdin, one
+per line, using the last two fields of each line, so the output of
+c8sh version list can be piped in:
+
+  c8sh version list PROCESS_ID | $_camunda_prog --dry-run
+
+Output, one line per item, for piping into other commands:
+
+  --dry-run   processDefinitionId version processInstanceKey
+              (each instance that would be deleted, each root followed by
+              the instances it called)
+  otherwise   processDefinitionId version batchOperationKey
+              (each deletion started; it runs in the background)
+
+A summary goes to stderr, including how many called instances were skipped.
+Exits with status 1 if any requested version isn't deployed.
+
+Options:
+  -n, --dry-run               show what would be deleted; change nothing
+  --ignore-dependencies       delete only the chosen versions' instances,
+                              ignoring the call trees they belong to
+  -y, --yes                   don't ask for confirmation (see
+                              CAMUNDA_PROTECTED in the README)
+  -c, --customer NAME         customer profile to use (default: \$CAMUNDA_CUSTOMER,
+                              or the one chosen with c8sh profile use)
+  -e, --environment-name ENV  environment to use (default: \$CAMUNDA_ENV, or
+                              the one chosen with c8sh profile use)
+  -h, --help                  show this help and exit
+EOF
+}
+
+dry_run=
+ignore_deps=
+while [ $# -gt 0 ]; do
+    case $1 in
+        -n | --dry-run) dry_run=1; shift ;;
+        --ignore-dependencies) ignore_deps=1; shift ;;
+        -y | --yes) CAMUNDA_ASSUME_YES=1; shift ;;
+        --) shift; break ;;
+        -?*) camunda_common_option "$@"; shift "$_camunda_shift" ;;
+        *) break ;;
+    esac
+done
+
+camunda_check_version_args "$@"
+camunda_load_profile
+# A deleted version's history is still there to delete.
+_camunda_version_states="ACTIVE DRAINING DELETED"
+tmp=$CAMUNDA_TMPDIR
+status=0
+
+camunda_resolve_versions "$@" || status=$?
+[ -s "$CAMUNDA_TARGETS" ] || exit "$status"
+
+# Only finished instances can be deleted. Say so in every request rather
+# than rely on the server to skip active ones.
+finished='{"state": {"$in": ["COMPLETED", "TERMINATED"]}}'
+finished_roots='{"state": {"$in": ["COMPLETED", "TERMINATED"]}, "parentProcessInstanceKey": {"$exists": false}}'
+finished_called='{"state": {"$in": ["COMPLETED", "TERMINATED"]}, "parentProcessInstanceKey": {"$exists": true}}'
+
+# $1: file of instances (one per line). Writes to $2 the ones whose parent
+# no longer exists, e.g. removed by history retention: they count as roots.
+orphans() {
+    jq -r '.parentProcessInstanceKey // empty' "$1" | sort -u >"$tmp/parent-keys"
+    : >"$tmp/parents-found"
+    split -l 1000 "$tmp/parent-keys" "$tmp/pk."
+    for batch in "$tmp"/pk.*; do
+        [ -f "$batch" ] || continue
+        query=$(jq -R -s -c '{filter: {processInstanceKey: {"$in": split("\n") | map(select(. != ""))}}}' "$batch")
+        camunda_search /process-instances/search "$query" >>"$tmp/parents-found"
+    done
+    rm -f "$tmp"/pk.*
+    jq -c --slurpfile found "$tmp/parents-found" '
+        ($found | map({key: .processInstanceKey, value: true}) | from_entries) as $exists
+        | select(.parentProcessInstanceKey != null and ($exists[.parentProcessInstanceKey] | not))' "$1" >"$2"
+}
+
+if [ -n "$ignore_deps" ]; then
+    # Just the chosen versions' finished instances, whatever their parents
+    # and children. Each version's instances are its own "tree".
+    camunda_find_instances "$finished" "$tmp/all"
+    jq -n -r --rawfile targets "$CAMUNDA_TARGETS" --slurpfile all "$tmp/all" '
+        ($all | group_by(.processDefinitionKey)
+            | map({key: .[0].processDefinitionKey, value: sort_by(.processInstanceKey)}) | from_entries) as $byversion
+        | $targets | split("\n")[] | select(. != "") | split(" ") as [$id, $v, $k]
+        | ($byversion[$k] // [])[]
+        | "\($id) \($v) \(.processDefinitionId) \(.processDefinitionVersion) \(.processInstanceKey)"
+    ' >"$tmp/plan"
+
+    # Say what the default would have done differently: called instances
+    # whose parent exists but stays, and instances they called that stay.
+    total=$(wc -l <"$tmp/plan" | tr -d ' ')
+    versions=$(awk '{ print $1, $2 }' "$tmp/plan" | sort -u | wc -l | tr -d ' ')
+    awk '{ print $5 }' "$tmp/plan" >"$tmp/plan-keys"
+    orphans "$tmp/all" "$tmp/orphans"
+    called=$(jq -s --rawfile keys "$tmp/plan-keys" --slurpfile orphans "$tmp/orphans" '
+        ($keys | split("\n") | map({key: ., value: true}) | from_entries) as $in
+        | ($orphans | map({key: .processInstanceKey, value: true}) | from_entries) as $orphan
+        | [.[] | select(.parentProcessInstanceKey != null and ($in[.parentProcessInstanceKey] | not)
+                        and ($orphan[.processInstanceKey] | not))] | length
+    ' "$tmp/all")
+    camunda_find_descendants "$tmp/plan-keys" "$finished" "$tmp/below"
+    left=$(jq -c --rawfile keys "$tmp/plan-keys" '
+        ($keys | split("\n") | map({key: ., value: true}) | from_entries) as $in
+        | select($in[.processInstanceKey] | not)' "$tmp/below" | wc -l | tr -d ' ')
+    camunda_warn "--ignore-dependencies: $called of these were called by an instance that stays, and" \
+        "$left instance(s) they called, in other versions or processes, stay behind"
+    summary="$total instance(s) of $versions version(s), ignoring call dependencies"
+else
+    # Whole call trees. The roots: the chosen versions' finished instances
+    # that have no parent, or whose parent no longer exists.
+    camunda_find_instances "$finished_roots" "$tmp/roots"
+    camunda_find_instances "$finished_called" "$tmp/called-here"
+    orphans "$tmp/called-here" "$tmp/orphans"
+    cat "$tmp/orphans" >>"$tmp/roots"
+
+    # And everything they called, whatever its process or version.
+    jq -r '.processInstanceKey' "$tmp/roots" >"$tmp/root-keys"
+    camunda_find_descendants "$tmp/root-keys" "$finished" "$tmp/called"
+
+    # The plan, "targetId targetVersion processDefinitionId version instanceKey",
+    # grouped by chosen version: each root, then the instances it called.
+    camunda_plan_trees "$tmp/roots" "$tmp/called" >"$tmp/plan"
+
+    # Called instances of the chosen versions that aren't in any of those
+    # trees stay: their parent exists and isn't being deleted.
+    jq -c --rawfile plan "$tmp/plan" '
+        ($plan | split("\n") | map(select(. != "") | split(" ")[4] | {key: ., value: true}) | from_entries) as $in
+        | select($in[.processInstanceKey] | not)' "$tmp/called-here" >"$tmp/skipped"
+    skipped=$(wc -l <"$tmp/skipped" | tr -d ' ')
+
+    total=$(wc -l <"$tmp/plan" | tr -d ' ')
+    roots=$(wc -l <"$tmp/roots" | tr -d ' ')
+    orphaned=$(wc -l <"$tmp/orphans" | tr -d ' ')
+    versions=$(awk '{ print $1, $2 }' "$tmp/plan" | sort -u | wc -l | tr -d ' ')
+    summary="$roots root instance(s) of $versions version(s)"
+    if [ "$orphaned" -gt 0 ]; then
+        summary="$summary ($orphaned of them called instances whose parent is already gone)"
+    fi
+    summary="$summary, with $((total - roots)) instance(s) they called"
+    if [ "$skipped" -gt 0 ]; then
+        camunda_warn "skipping $skipped called instance(s) of the chosen versions: their parent still" \
+            "exists and isn't being deleted"
+    fi
+fi
+
+if [ -n "$dry_run" ]; then
+    awk '{ print $3, $4, $5 }' "$tmp/plan"
+    printf '%s: dry run in %s: would delete %s instance(s): %s; nothing changed\n' \
+        "$_camunda_prog" "$CAMUNDA_LABEL" "$total" "$summary" >&2
+    exit "$status"
+fi
+
+if [ "$total" -eq 0 ]; then
+    printf '%s: no finished instances to delete in %s\n' "$_camunda_prog" "$CAMUNDA_LABEL" >&2
+    exit "$status"
+fi
+
+camunda_confirm "delete $total finished instance(s) ($summary)"
+
+# One batch per chosen version (more if it has over 1000 instances),
+# naming the exact instances. Every key is checked: a batch without them
+# would match every finished instance in the cluster.
+if awk '$5 !~ /^[0-9]+$/ { bad = 1 } END { exit !bad }' "$tmp/plan"; then
+    camunda_die "refusing to continue: the plan has an instance without a valid key"
+fi
+deleted=0
+for target in $(awk '{ print $1 "/" $2 }' "$tmp/plan" | awk '!seen[$0]++'); do
+    id=${target%/*}
+    v=${target##*/}
+    awk -v id="$id" -v v="$v" '$1 == id && $2 == v { print $5 }' "$tmp/plan" | split -l 1000 - "$tmp/del."
+    for batch in "$tmp"/del.*; do
+        jq -R -s -c --argjson extra "$finished" \
+            '{filter: ($extra + {processInstanceKey: {"$in": split("\n") | map(select(. != ""))}})}' \
+            "$batch" >"$tmp/delete.json"
+        n=$(wc -l <"$batch" | tr -d ' ')
+        if camunda_api POST /process-instances/deletion --data @"$tmp/delete.json" >"$tmp/created"; then
+            printf '%s %s %s\n' "$id" "$v" "$(jq -r '.batchOperationKey' "$tmp/created")"
+            deleted=$((deleted + n))
+        else
+            camunda_warn "could not start deleting $n instance(s) for $id $v"
+            status=1
+        fi
+        rm -f "$batch"
+    done
+done
+printf '%s: started deleting %s instance(s) in %s\n' "$_camunda_prog" "$deleted" "$CAMUNDA_LABEL" >&2
+exit "$status"

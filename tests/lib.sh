@@ -15,7 +15,8 @@
 #                           terminal to confirm with (CAMUNDA_TTY), unless
 #   answer TEXT             says what to type when the next command asks
 #   run_with INPUT CMD...   the same, with INPUT on stdin
-#   c8 NAME ARGS...         a command for run: bin/NAME in the shell under test
+#   c8sh NOUN VERB ARGS...  a command for run: c8sh in the shell under test
+#   c8 NAME ARGS...         a command for run: bin/NAME (e.g. an old name)
 #   lib FUNCTION ARGS...    a command for run: a lib/camunda.sh function in
 #                           the shell under test
 #   assert_status N
@@ -49,7 +50,10 @@ setup_file() {
     # No terminal to confirm with, even when run from one: a test must never
     # prompt. Tests that answer use the 'answer' helper.
     CAMUNDA_TTY=$TEST_TMP/no-terminal
-    export HOME CAMUNDA_CONFIG_DIR XDG_CACHE_HOME CAMUNDA_TTY
+    # c8sh runs its commands in the shell under test too.
+    C8SH_SHELL=$TEST_SHELL
+    export HOME CAMUNDA_CONFIG_DIR XDG_CACHE_HOME CAMUNDA_TTY C8SH_SHELL
+    unset C8SH_CUSTOMER C8SH_ENV C8SH_PROG
     unset XDG_CONFIG_HOME
     mkdir -p "$HOME"
 
@@ -105,6 +109,10 @@ answer() {
 }
 
 # --- running things ------------------------------------------------------
+
+c8sh() {
+    $TEST_SHELL "$ROOT/bin/c8sh" "$@"
+}
 
 c8() {
     _c8_name=$1
